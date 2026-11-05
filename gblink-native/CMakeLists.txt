@@ -24,7 +24,7 @@ file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/payload_data.cpp
   "extern const unsigned char kDumperPayload[] = {${PAYLOAD_C}};\n"
   "extern const unsigned long kDumperPayloadSize = ${PAYLOAD_SIZE};\n")
 
-add_library(gblink STATIC src/UsbLink.cpp src/Spi32.cpp src/Multiboot.cpp src/GbaCartClient.cpp)
+add_library(gblink STATIC src/UsbLink.cpp src/Spi32.cpp src/Multiboot.cpp src/GbaCartClient.cpp src/ScreenMirror.cpp)
 target_include_directories(gblink PUBLIC src)
 add_executable(gblink-probe src/probe_main.cpp ${CMAKE_CURRENT_BINARY_DIR}/payload_data.cpp)
 target_link_libraries(gblink-probe PRIVATE gblink)

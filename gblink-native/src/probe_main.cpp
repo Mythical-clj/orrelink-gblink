@@ -15,6 +15,7 @@
 
 #include "GbaCartClient.h"
 #include "Multiboot.h"
+#include "ScreenMirror.h"
 #include "UsbLink.h"
 
 extern const unsigned char kDumperPayload[];
@@ -81,6 +82,7 @@ static int CmdInfo(bool trace)
 
 static std::string g_agent_path;
 static std::string g_image_path;
+static bool g_mirror_test = false;
 static int g_cable = -1;
 static bool g_loaded = false;
 
@@ -152,10 +154,53 @@ static int CmdPad(bool trace, int wait_s, int seconds)
     int bad = 0;
     long polls = 0;
     const auto t0 = std::chrono::steady_clock::now();
+    ScreenMirror mirror;
+    mirror.Reset();
+    std::vector<uint32_t> frame(240 * 160), packet;
+    long sent = 0, failed = 0, sent_tiles = 0;
+    int last_step = -1;
     while (std::chrono::steady_clock::now() - t0 < std::chrono::seconds(seconds))
     {
       uint16_t keys = 0;
       uint32_t raw = 0;
+      if (g_mirror_test)
+      {
+        // A colour gradient with a bright box that hops around every 250 ms, a bit like a menu
+        // cursor, plus a bar that grows every second.
+        const int ms = int(std::chrono::duration_cast<std::chrono::milliseconds>(
+                               std::chrono::steady_clock::now() - t0).count());
+        const int step = ms / 250;
+        if (step != last_step)
+        {
+          last_step = step;
+          const int bx = (step * 37) % 200, by = (step * 23) % 120, bar = ((ms / 1000) % 24 + 1) * 10;
+          for (int y = 0; y < 160; y++)
+            for (int x = 0; x < 240; x++)
+            {
+              uint32_t r = x * 255 / 239, g = y * 255 / 159, b = 128;
+              if (x >= bx && x < bx + 32 && y >= by && y < by + 24)
+                r = g = b = 255;
+              if (y >= 150 && x < bar)
+                r = 255, g = b = 0;
+              frame[y * 240 + x] = r | (g << 8) | (b << 16);
+            }
+          mirror.SubmitFrame(frame.data(), frame.size());
+        }
+        if (mirror.NextPacket(&packet, 12))
+        {
+          if (cart.SendTiles(packet, &keys))
+          {
+            mirror.PacketAcked();
+            sent++;
+            sent_tiles += long(packet.size() / ScreenMirror::kTileWords);
+          }
+          else
+          {
+            mirror.PacketFailed();
+            failed++;
+          }
+        }
+      }
       if (!cart.PollPad(&keys, &raw))
       {
         char b[64];
@@ -180,6 +225,9 @@ static int CmdPad(bool trace, int wait_s, int seconds)
       }
     }
     const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    if (g_mirror_test)
+      Log("mirror: " + std::to_string(sent) + " packets (" + std::to_string(sent_tiles) + " tiles) acknowledged, " +
+          std::to_string(failed) + " failed");
     Log("polls: " + std::to_string(polls) + "  (" + std::to_string(int(polls / secs)) + "/s)");
     cart.LeavePadMode();
     Log("left controller mode");
@@ -363,7 +411,7 @@ int main(int argc, char** argv)
   Log("gblink-probe - GB-Link native client prototype");
   if (argc < 2)
   {
-    Log("usage: gblink-probe list | info [--trace] | dump <out.sav> [--trace] [--wait seconds] [--cable auto|gba|gbc] [--loaded] | pad --agent <file.gba> [--seconds N] [--image xd-standby.bin] | team <out.sav> --agent <file.gba>");
+    Log("usage: gblink-probe list | info [--trace] | dump <out.sav> [--trace] [--wait seconds] [--cable auto|gba|gbc] [--loaded] | pad --agent <file.gba> [--seconds N] [--image xd-standby.bin] [--mirror-test] | team <out.sav> --agent <file.gba>");
     return 1;
   }
   const std::string cmd = argv[1];
@@ -379,6 +427,8 @@ int main(int argc, char** argv)
       g_agent_path = argv[++i];
     else if (!std::strcmp(argv[i], "--image") && i + 1 < argc)
       g_image_path = argv[++i];
+    else if (!std::strcmp(argv[i], "--mirror-test"))
+      g_mirror_test = true;
     else if (!std::strcmp(argv[i], "--seconds") && i + 1 < argc)
       seconds = std::atoi(argv[++i]);
     else if (!std::strcmp(argv[i], "--loaded"))

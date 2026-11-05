@@ -474,6 +474,51 @@ static void writeSave(u32 savesize)
 #define PAD_MAGIC     0x4B500000
 #define PAD_EXIT_KEYS 0x030C
 #define PAD_EXIT_POLLS 500
+/* Screen mirroring. While the controller loop runs, the page may send a tile
+ * packet instead of its usual M_POLL:
+ *   M_TILES | n            n tiles follow (n <= TILE_MAX_PER_PACKET)
+ *   n x { index, 16 words }  index < 600: Mode 4 tile (8x8 pixels, row by row,
+ *                            two words per row); 600..607: a 64-byte chunk of
+ *                            the palette
+ *   xor of every word above
+ *   (any word)               the reply to this one is PAD_ACK | ok
+ * Keys keep being reported in every reply, so the controller never stalls. */
+#define M_TILES       0x47540000
+#define PAD_ACK       0x4B410000
+#define TILE_MAX_PER_PACKET 16
+#define TILE_WORDS    17
+#define TILES_X       30
+#define TILE_PAL_BASE 600
+#define TILE_COUNT    608
+
+static void applyTiles(const u32 *buf, u32 n)
+{
+	u32 t, r;
+	for(t = 0; t < n; t++)
+	{
+		const u32 *w = buf + t * TILE_WORDS;
+		u32 idx = w[0];
+		if(idx >= TILE_COUNT)
+			continue;
+		if(idx >= TILE_PAL_BASE)
+		{
+			vu32 *dst = (vu32 *)(0x05000000 + (idx - TILE_PAL_BASE) * 64);
+			for(r = 0; r < 16; r++)
+				dst[r] = w[1 + r];
+		}
+		else
+		{
+			u32 tx = idx % TILES_X, ty = idx / TILES_X;
+			vu32 *dst = (vu32 *)(0x06000000 + (ty * 8) * 240 + tx * 8);
+			for(r = 0; r < 8; r++)
+			{
+				dst[r * 60]     = w[1 + r * 2];
+				dst[r * 60 + 1] = w[2 + r * 2];
+			}
+		}
+	}
+}
+
 static void padLoop(void)
 {
 	u32 seq = 0, held = 0;
@@ -487,6 +532,33 @@ static void padLoop(void)
 		seq++;
 		if(rx == M_ABORT)
 			return;
+		if((rx & 0xFFFF0000) == M_TILES)
+		{
+			u32 n = rx & 0xFFFF;
+			if(n >= 1 && n <= TILE_MAX_PER_PACKET)
+			{
+				u32 *buf = (u32 *)save_data;
+				u32 total = n * TILE_WORDS, i, xsum = 0;
+				for(i = 0; i < total; i++)
+				{
+					keys = (~REG_KEYINPUT) & 0x03FF;
+					u32 v = linkXfer(PAD_MAGIC | ((seq & 0xF) << 12) | keys);
+					seq++;
+					buf[i] = v;
+					xsum ^= v;
+				}
+				u32 check = linkXfer(PAD_MAGIC | ((seq & 0xF) << 12) | keys);
+				seq++;
+				u32 ok = (check == xsum);
+				/* This reply tells the page whether the packet arrived intact. */
+				linkXfer(PAD_ACK | ok);
+				if(ok)
+				{
+					applyTiles(buf, n);
+					REG_DISPCNT = 0x0404; /* Mode 4, BG2 on */
+				}
+			}
+		}
 		held = (keys == PAD_EXIT_KEYS) ? held + 1 : 0;
 		if(held >= PAD_EXIT_POLLS)
 			return;
