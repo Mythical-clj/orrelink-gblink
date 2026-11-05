@@ -43,7 +43,7 @@
 #include "InputCommon/ControllerInterface/ControllerInterface.h"
 #include "InputCommon/GCAdapter.h"
 #if defined(__LIBUSB__) && !defined(ANDROID)
-#include "InputCommon/GBLink/Manager.h"
+#include "InputCommon/GBLink/GBLinkManager.h"
 #endif
 
 #include "UICommon/DiscordPresence.h"
