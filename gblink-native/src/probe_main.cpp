@@ -8,6 +8,8 @@
 #include <cstring>
 #include <fstream>
 #include <iostream>
+#include <iterator>
+#include <vector>
 #include <string>
 #include <thread>
 
@@ -77,8 +79,95 @@ static int CmdInfo(bool trace)
   return 0;
 }
 
+static std::string g_agent_path;
 static int g_cable = -1;
 static bool g_loaded = false;
+
+static int CmdPad(bool trace, int wait_s, int seconds)
+{
+  UsbLink usb;
+  usb.SetLog(Log);
+  usb.SetTrace(trace);
+  std::string err;
+  if (!usb.Open(&err))
+  {
+    Log("OPEN FAILED: " + err);
+    return 2;
+  }
+  usb.DrainData();
+  usb.SetVoltage3V3();
+  if (g_cable >= 0)
+    usb.SetCableOverride(uint8_t(g_cable));
+  usb.DrainData();
+  std::vector<uint8_t> payload;
+  if (g_agent_path.empty())
+  {
+    Log("--agent <orrelink-agent_mb.gba> is required for pad mode (download it from the Actions artifact).");
+    return 1;
+  }
+  {
+    std::ifstream f(g_agent_path, std::ios::binary);
+    payload.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+  }
+  if (payload.empty())
+  {
+    Log("could not read " + g_agent_path);
+    return 1;
+  }
+  if (!Multiboot(usb, payload, &err, Log, wait_s))
+  {
+    Log("MULTIBOOT FAILED: " + err);
+    return 4;
+  }
+  GbaCartClient cart(usb, Log);
+  try
+  {
+    cart.EnterPadMode();
+    Log("Controller mode on. Press buttons on the GBA (" + std::to_string(seconds) + " s)...");
+    static const char* names[10] = {"A", "B", "Select", "Start", "Right", "Left", "Up", "Down", "R", "L"};
+    uint16_t last = 0xFFFF;
+    int bad = 0;
+    long polls = 0;
+    const auto t0 = std::chrono::steady_clock::now();
+    while (std::chrono::steady_clock::now() - t0 < std::chrono::seconds(seconds))
+    {
+      uint16_t keys = 0;
+      uint32_t raw = 0;
+      if (!cart.PollPad(&keys, &raw))
+      {
+        char b[64];
+        std::snprintf(b, sizeof(b), "unexpected reply 0x%08x", raw);
+        if (++bad < 5)
+          Log(b);
+        if (bad > 50)
+          break;
+        continue;
+      }
+      polls++;
+      if (keys != last)
+      {
+        last = keys;
+        std::string s = "keys:";
+        for (int i = 0; i < 10; i++)
+          if (keys & (1 << i))
+            s += std::string(" ") + names[i];
+        if (!keys)
+          s += " (none)";
+        Log(s);
+      }
+    }
+    const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    Log("polls: " + std::to_string(polls) + "  (" + std::to_string(int(polls / secs)) + "/s)");
+    cart.LeavePadMode();
+    Log("left controller mode");
+  }
+  catch (const GbaCartError& e)
+  {
+    Log(std::string("PAD FAILED [") + e.code + "]: " + e.what());
+    return 7;
+  }
+  return 0;
+}
 
 static int CmdDump(const std::string& out_path, bool trace, int wait_s)
 {
@@ -171,17 +260,22 @@ int main(int argc, char** argv)
   Log("gblink-probe - GB-Link native client prototype");
   if (argc < 2)
   {
-    Log("usage: gblink-probe list | info [--trace] | dump <out.sav> [--trace] [--wait seconds] [--cable auto|gba|gbc] [--loaded]");
+    Log("usage: gblink-probe list | info [--trace] | dump <out.sav> [--trace] [--wait seconds] [--cable auto|gba|gbc] [--loaded] | pad --agent <file.gba> [--seconds N]");
     return 1;
   }
   const std::string cmd = argv[1];
   bool trace = false;
   int wait_s = 60;
+  int seconds = 60;
   std::string out;
   for (int i = 2; i < argc; i++)
   {
     if (!std::strcmp(argv[i], "--trace"))
       trace = true;
+    else if (!std::strcmp(argv[i], "--agent") && i + 1 < argc)
+      g_agent_path = argv[++i];
+    else if (!std::strcmp(argv[i], "--seconds") && i + 1 < argc)
+      seconds = std::atoi(argv[++i]);
     else if (!std::strcmp(argv[i], "--loaded"))
       g_loaded = true;
     else if (!std::strcmp(argv[i], "--cable") && i + 1 < argc)
@@ -198,6 +292,8 @@ int main(int argc, char** argv)
     return CmdList();
   if (cmd == "info")
     return CmdInfo(trace);
+  if (cmd == "pad")
+    return CmdPad(trace, wait_s, seconds);
   if (cmd == "dump" && !out.empty())
     return CmdDump(out, trace, wait_s);
   Log("bad arguments");

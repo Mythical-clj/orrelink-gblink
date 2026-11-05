@@ -37,6 +37,16 @@ public:
 
   void Cancel() { m_cancel = true; }
   bool Ping(int timeout_ms = 3000);
+
+  // OrreLink agent only (orrelink-agent_mb.gba, not the stock Cart Doctor dumper).
+  // Controller mode: after EnterPadMode the GBA answers every exchange with its key
+  // state. Leave it with LeavePadMode before issuing any other command.
+  void EnterPadMode();
+  // One exchange. Returns false if the reply is not a key word (GBA left pad mode,
+  // wrong program, or a garbled word). keys: bit0 A, 1 B, 2 Select, 3 Start, 4 Right,
+  // 5 Left, 6 Up, 7 Down, 8 R, 9 L.
+  bool PollPad(uint16_t* keys, uint32_t* raw_reply = nullptr);
+  void LeavePadMode();
   CartInfo ReadInfo();
   // Dumps the cartridge save (EEPROM 512B/8K, SRAM 32K, Flash 64K/128K).
   std::vector<uint8_t> DumpSave(const Progress& progress = {});

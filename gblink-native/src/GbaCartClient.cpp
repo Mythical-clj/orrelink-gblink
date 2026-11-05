@@ -13,7 +13,8 @@ namespace
 constexpr uint32_t M_MAGIC = 0x47420000, M_POLL = 0, M_GO = 0x4742600D, M_CONT = 0x4742C047,
                    M_FAIL = 0x4742BAD0, M_ABORT = 0x4742AB0B;
 constexpr uint32_t G_READY = 0x52454459, G_DONE = 0x444F4E45;
-constexpr uint32_t CMD_DUMP_SAVE = 2, CMD_INFO = 6;
+constexpr uint32_t CMD_DUMP_SAVE = 2, CMD_INFO = 6, CMD_PAD = 8;
+constexpr uint32_t PAD_MAGIC = 0x4B500000;
 constexpr size_t SECTION_WORDS = 0x40;
 
 using Clock = std::chrono::steady_clock;
@@ -152,6 +153,28 @@ std::vector<uint8_t> GbaCartClient::StreamIn(size_t total, const Progress& progr
     }
   }
   return out;
+}
+
+void GbaCartClient::EnterPadMode()
+{
+  Command(CMD_PAD);
+}
+
+bool GbaCartClient::PollPad(uint16_t* keys, uint32_t* raw_reply)
+{
+  const uint32_t w = Xfer(M_POLL);
+  if (raw_reply)
+    *raw_reply = w;
+  if ((w & 0xFFFF0000u) != PAD_MAGIC)
+    return false;
+  *keys = static_cast<uint16_t>(w & 0x03FF);
+  return true;
+}
+
+void GbaCartClient::LeavePadMode()
+{
+  Xfer(M_ABORT);
+  PollReady(3000);
 }
 
 CartInfo GbaCartClient::ReadInfo()
