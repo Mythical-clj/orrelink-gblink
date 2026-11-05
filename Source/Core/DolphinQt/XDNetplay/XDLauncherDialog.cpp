@@ -424,6 +424,12 @@ void XDLauncherDialog::CreateMainLayout()
   m_gblink_full_read_check->setToolTip(
       tr("By default only your trainer info and team are read from the cartridge, which is much "
          "faster. Tick this to read and import the entire save instead."));
+  m_gblink_menu_check = new QCheckBox(tr("Also use my real GBA for XD menus (port 1)"));
+  m_gblink_menu_check->setChecked(false);
+  m_gblink_menu_check->setToolTip(
+      tr("The real GBA's buttons also act as the GameCube pad on port 1, so you can move through "
+         "XD's menus with it. Turn this off during link battles, where the GBA plays the "
+         "emulated Emerald instead."));
   m_gblink_pad_check = new QCheckBox(tr("Use my real GBA as the controller"));
   m_gblink_pad_check->setChecked(true);
   m_gblink_pad_check->setToolTip(
@@ -433,7 +439,8 @@ void XDLauncherDialog::CreateMainLayout()
          "release it."));
   gblink_layout->addWidget(m_gblink_status, 0, 0);
   gblink_layout->addWidget(m_gblink_pad_check, 1, 0);
-  gblink_layout->addWidget(m_gblink_full_read_check, 2, 0);
+  gblink_layout->addWidget(m_gblink_menu_check, 2, 0);
+  gblink_layout->addWidget(m_gblink_full_read_check, 3, 0);
   gblink_layout->setColumnStretch(0, 1);
   gblink_box->setLayout(gblink_layout);
   layout->addWidget(gblink_box);
@@ -908,6 +915,13 @@ void XDLauncherDialog::ConnectWidgets()
     (void)on;
 #endif
   });
+  connect(m_gblink_menu_check, &QCheckBox::toggled, this, [](bool on) {
+#ifdef ORRELINK_GBLINK
+    GBLink::Manager::Get().SetMenuNavigation(on);
+#else
+    (void)on;
+#endif
+  });
   m_gblink_timer = new QTimer(this);
   connect(m_gblink_timer, &QTimer::timeout, this, &XDLauncherDialog::RefreshGbLinkStatus);
   m_gblink_timer->start(500);
@@ -1230,6 +1244,7 @@ void XDLauncherDialog::RefreshGbLinkStatus()
 #else
   m_gblink_status->setText(tr("GB-Link support is not available in this build."));
   m_gblink_pad_check->setEnabled(false);
+  m_gblink_menu_check->setEnabled(false);
   m_save_row_port2.gblink_button->setEnabled(false);
   m_save_row_port3.gblink_button->setEnabled(false);
 #endif

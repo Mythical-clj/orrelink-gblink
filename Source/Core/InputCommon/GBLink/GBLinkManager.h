@@ -68,6 +68,10 @@ public:
   void SetControllerEnabled(bool enabled);
   bool IsControllerEnabled() const { return m_controller_enabled; }
 
+  // When on, the real GBA's buttons also drive the GameCube pad on port 1 (menu navigation).
+  void SetMenuNavigation(bool on) { m_menu_nav = on; }
+  bool IsMenuNavigation() const { return m_menu_nav; }
+
   // Asynchronous, read-only cartridge save dump. |done| runs on the manager thread.
   // |progress| gets 0-100. Returns false if a dump is already queued.
   // team_only: read just the Gen 3 trainer + party sections when the OrreLink agent is running
@@ -106,6 +110,7 @@ private:
 
   std::atomic<bool> m_controller_enabled{true};
   std::atomic<bool> m_pad_live{false};
+  std::atomic<bool> m_menu_nav{false};
   std::atomic<uint16_t> m_pad_keys{0};
   mutable std::atomic<uint64_t> m_query_count{0};
   mutable std::atomic<uint64_t> m_query_live{0};
