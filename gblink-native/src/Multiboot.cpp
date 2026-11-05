@@ -57,7 +57,7 @@ bool Multiboot(UsbLink& usb, const std::vector<uint8_t>& rom, std::string* error
   if (!usb.SetTimingConfig(36, 4))
     return fail("could not set timing (need new GB-Link firmware, VID 2FE3)");
 
-  log("Waiting for the GBA... power it on with the link cable attached");
+  log("Waiting for the GBA (it must be at the multiboot screen: no cart inserted, or hold START+SELECT at the logo)");
   uint32_t recv = 0;
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(wait_s);
   int attempts = 0;

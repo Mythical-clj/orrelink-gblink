@@ -58,15 +58,25 @@ static int CmdInfo(bool trace)
     return 2;
   }
   PrintDevice(usb.Info());
+  usb.DrainData();
   uint8_t buf[64];
-  usb.SendCommand({CMD_GET_FIRMWARE_INFO});
-  size_t n = usb.ReadStatus(buf, sizeof(buf), 1000);
-  Log("firmware info (0x0F): " + (n ? Hex(buf, n) : std::string("<no reply>")));
-  usb.SendCommand({CMD_GET_CABLE_TYPE});
-  n = usb.ReadStatus(buf, sizeof(buf), 1000);
-  Log("cable type (0x4A): " + (n ? Hex(buf, n) : std::string("<no reply>")) + "  [4a 00 = GBA cable, 4a 01 = GBC cable]");
+  const auto ask = [&](uint8_t cmd, const char* name) {
+    usb.SendCommand({cmd});
+    size_t n = usb.ReadBytes(buf, sizeof(buf), 600);
+    std::string where = "data channel";
+    if (!n)
+    {
+      n = usb.ReadStatus(buf, sizeof(buf), 600);
+      where = "status channel";
+    }
+    Log(std::string(name) + ": " + (n ? Hex(buf, n) + "  (on " + where + ")" : std::string("<no reply>")));
+  };
+  ask(CMD_GET_FIRMWARE_INFO, "firmware info (0x0F)");
+  ask(CMD_GET_CABLE_TYPE, "cable type (0x4A; 0 = GBA cable, 1 = GBC cable)");
   return 0;
 }
+
+static int g_cable = -1;
 
 static int CmdDump(const std::string& out_path, bool trace, int wait_s)
 {
@@ -85,7 +95,11 @@ static int CmdDump(const std::string& out_path, bool trace, int wait_s)
     Log("This adapter reports old-style firmware; the native client needs the new firmware (update at launcher.gblink.io).");
     return 3;
   }
+  usb.DrainData();
   usb.SetVoltage3V3();
+  if (g_cable >= 0)
+    usb.SetCableOverride(uint8_t(g_cable));
+  usb.DrainData();
 
   const std::vector<uint8_t> payload(kDumperPayload, kDumperPayload + kDumperPayloadSize);
   Log("Sending the dumper program to the GBA (this does not touch the cartridge)...");
@@ -138,7 +152,7 @@ int main(int argc, char** argv)
   Log("gblink-probe - GB-Link native client prototype");
   if (argc < 2)
   {
-    Log("usage: gblink-probe list | info [--trace] | dump <out.sav> [--trace] [--wait seconds]");
+    Log("usage: gblink-probe list | info [--trace] | dump <out.sav> [--trace] [--wait seconds] [--cable auto|gba|gbc]");
     return 1;
   }
   const std::string cmd = argv[1];
@@ -149,6 +163,11 @@ int main(int argc, char** argv)
   {
     if (!std::strcmp(argv[i], "--trace"))
       trace = true;
+    else if (!std::strcmp(argv[i], "--cable") && i + 1 < argc)
+    {
+      const std::string c = argv[++i];
+      g_cable = c == "auto" ? 0 : c == "gba" ? 1 : c == "gbc" ? 2 : -1;
+    }
     else if (!std::strcmp(argv[i], "--wait") && i + 1 < argc)
       wait_s = std::atoi(argv[++i]);
     else if (out.empty())

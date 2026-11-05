@@ -292,6 +292,25 @@ size_t UsbLink::ReadStatus(uint8_t* out, size_t max_len, int timeout_ms)
   return got > 0 ? static_cast<size_t>(got) : 0;
 }
 
+size_t UsbLink::DrainData(int quiet_ms)
+{
+  size_t total = 0;
+  uint8_t buf[64];
+  for (int i = 0; i < 64; i++)
+  {
+    const size_t n = ReadBytes(buf, sizeof(buf), quiet_ms);
+    if (n == 0)
+      break;
+    total += n;
+  }
+  return total;
+}
+
+bool UsbLink::SetCableOverride(uint8_t sel)
+{
+  return m_new_firmware ? SendCommand({CMD_SET_CABLE_OVERRIDE, sel}) : true;
+}
+
 bool UsbLink::SetVoltage3V3()
 {
   if (m_new_firmware)

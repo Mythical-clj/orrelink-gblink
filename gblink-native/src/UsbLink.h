@@ -34,6 +34,7 @@ enum Cmd : uint8_t
   CMD_SET_TIMING = 0x30,
   CMD_VOLTAGE_3V3 = 0x40,
   CMD_VOLTAGE_5V = 0x41,
+  CMD_SET_CABLE_OVERRIDE = 0x49,
   CMD_GET_CABLE_TYPE = 0x4A,
 };
 enum Mode : uint8_t
@@ -71,6 +72,10 @@ public:
   // Reads one packet from the command-status channel (new firmware only).
   size_t ReadStatus(uint8_t* out, size_t max_len, int timeout_ms);
 
+  // Discards any stale bytes waiting on the data channel (replies to earlier commands
+  // can land there and would otherwise shift every later exchange).
+  size_t DrainData(int quiet_ms = 60);
+  bool SetCableOverride(uint8_t sel);  // 0 auto, 1 GBA cable, 2 GBC cable (session only)
   bool SetVoltage3V3();
   bool SetMode(uint8_t mode);
   bool SetTimingConfig(uint32_t us_between_transfers, uint8_t bytes_per_transfer);
