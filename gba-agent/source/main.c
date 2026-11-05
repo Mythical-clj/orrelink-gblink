@@ -88,7 +88,13 @@
  * serves 256-byte-aligned ranges of it on request (see rangeLoop). Lets the
  * page read just the part of a save it needs instead of all 128 KB. */
 #define CMD_RANGES    9
-#define CMD_MAX       9
+/* OrreLink addition: the page sends a 240x160 Mode 4 picture (256-colour
+ * palette, 512 bytes, then 38400 index bytes). We show it and then run the
+ * controller loop on top of it, so the real GBA displays a fixed screen while
+ * its buttons play. The normal screen comes back when the loop ends. */
+#define CMD_IMAGE     10
+#define IMAGE_BYTES   (512 + 240 * 160)
+#define CMD_MAX       10
 
 #define SECTION_BYTES 0x100
 #define SECTION_WORDS (SECTION_BYTES / 4)
@@ -487,6 +493,21 @@ static void padLoop(void)
 	}
 }
 
+/* Show the picture staged in save_data (palette, then Mode 4 pixels). */
+static void showStagedImage(void)
+{
+	vu32 *pal = (vu32 *)0x05000000;
+	vu32 *pix = (vu32 *)0x06000000;
+	const u32 *src = (const u32 *)save_data;
+	u32 i;
+	REG_DISPCNT = LCDC_OFF;
+	for(i = 0; i < 512 / 4; i++)
+		pal[i] = src[i];
+	for(i = 0; i < (240 * 160) / 4; i++)
+		pix[i] = src[512 / 4 + i];
+	REG_DISPCNT = 0x0404; /* Mode 4, BG2 on */
+}
+
 /* Serve ranges of save_data until the page sends M_ABORT. Every request is
  * a three-word handshake so a garbled word can never start a transfer:
  *   page: M_RANGE_OFF|start   GBA answers the next exchange with ~that word
@@ -595,6 +616,23 @@ int main(void) {
 			uiActivity(ACT_PAD);
 			linkIdle();
 			padLoop();
+			uiActivity(ACT_WAITING);
+			continue;
+		}
+
+		if(cmd == CMD_IMAGE)
+		{
+			/* Same length / inverted length check as CMD_CART_RUN. */
+			u32 len = linkXfer(0);
+			u32 chk = linkXfer(len);
+			if(chk != ~len || len != IMAGE_BYTES)
+				continue;
+			if(!streamFromMaster(save_data, len, false))
+				continue;
+			showStagedImage();
+			linkIdle();
+			padLoop();
+			uiInit();
 			uiActivity(ACT_WAITING);
 			continue;
 		}

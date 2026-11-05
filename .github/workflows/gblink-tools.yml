@@ -32,6 +32,7 @@ jobs:
           path: |
             build/Release/gblink-probe.exe
             gblink-native/payload/LICENSE-cartdoctor-GPL3.txt
+            gblink-native/payload/xd-standby.bin
 
   gba-agent:
     runs-on: ubuntu-latest

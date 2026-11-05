@@ -42,6 +42,11 @@ public:
   // Controller mode: after EnterPadMode the GBA answers every exchange with its key
   // state. Leave it with LeavePadMode before issuing any other command.
   void EnterPadMode();
+  // OrreLink agent only: sends a 240x160 Mode 4 picture (512-byte BGR555 palette followed by
+  // 38400 index bytes, 38912 bytes in all), which the GBA shows, and enters controller mode on
+  // top of it. Poll with PollPad afterwards exactly as after EnterPadMode.
+  static constexpr size_t kImageBytes = 512 + 240 * 160;
+  void EnterPadModeWithImage(const std::vector<uint8_t>& image);
   // One exchange. Returns false if the reply is not a key word (GBA left pad mode,
   // wrong program, or a garbled word). keys: bit0 A, 1 B, 2 Select, 3 Start, 4 Right,
   // 5 Left, 6 Up, 7 Down, 8 R, 9 L.

@@ -80,6 +80,7 @@ static int CmdInfo(bool trace)
 }
 
 static std::string g_agent_path;
+static std::string g_image_path;
 static int g_cable = -1;
 static bool g_loaded = false;
 
@@ -122,7 +123,18 @@ static int CmdPad(bool trace, int wait_s, int seconds)
   GbaCartClient cart(usb, Log);
   try
   {
-    cart.EnterPadMode();
+    if (!g_image_path.empty())
+    {
+      std::ifstream f(g_image_path, std::ios::binary);
+      std::vector<uint8_t> img((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+      const auto ti = std::chrono::steady_clock::now();
+      cart.EnterPadModeWithImage(img);
+      Log("Picture sent in " +
+          std::to_string(int(std::chrono::duration<double>(std::chrono::steady_clock::now() - ti).count() * 1000)) +
+          " ms");
+    }
+    else
+      cart.EnterPadMode();
     Log("Controller mode on. Press buttons on the GBA (" + std::to_string(seconds) + " s)...");
     static const char* names[10] = {"A", "B", "Select", "Start", "Right", "Left", "Up", "Down", "R", "L"};
     uint16_t last = 0xFFFF;
@@ -340,7 +352,7 @@ int main(int argc, char** argv)
   Log("gblink-probe - GB-Link native client prototype");
   if (argc < 2)
   {
-    Log("usage: gblink-probe list | info [--trace] | dump <out.sav> [--trace] [--wait seconds] [--cable auto|gba|gbc] [--loaded] | pad --agent <file.gba> [--seconds N] | team <out.sav> --agent <file.gba>");
+    Log("usage: gblink-probe list | info [--trace] | dump <out.sav> [--trace] [--wait seconds] [--cable auto|gba|gbc] [--loaded] | pad --agent <file.gba> [--seconds N] [--image xd-standby.bin] | team <out.sav> --agent <file.gba>");
     return 1;
   }
   const std::string cmd = argv[1];
@@ -354,6 +366,8 @@ int main(int argc, char** argv)
       trace = true;
     else if (!std::strcmp(argv[i], "--agent") && i + 1 < argc)
       g_agent_path = argv[++i];
+    else if (!std::strcmp(argv[i], "--image") && i + 1 < argc)
+      g_image_path = argv[++i];
     else if (!std::strcmp(argv[i], "--seconds") && i + 1 < argc)
       seconds = std::atoi(argv[++i]);
     else if (!std::strcmp(argv[i], "--loaded"))
