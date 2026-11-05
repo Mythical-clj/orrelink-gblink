@@ -53,6 +53,7 @@ Windows is the tested platform (libusb is built into the Windows build).
 | **Menu navigation (optional)** | A checkbox lets the real GBA also act as the GameCube pad on port 1, so XD's own menus can be driven with it. It is off by default. |
 | **Standby picture** | When the GBA becomes a controller it shows an XD picture instead of the multiboot screen. |
 | **Screen mirroring** | The emulated GBA's screen (your move menu in a link battle) is drawn on the real GBA. A fixed 252-colour palette maps every pixel the same way every time, and only the 8x8 tiles that changed are sent, packed between the controller polls, so the buttons keep reporting while the picture updates. A whole new scene fills in over a few seconds, a menu cursor in a blink. A checkbox turns it off. |
+| **Up to four GB-Links** | Plug in as many as four adapters, each with its own GBA. Each adapter is found by the USB port it is plugged into and gets its own connection, so the same port always means the same GBA. In the launcher each one picks which emulated GBA it plays ("Automatic" is every GBA port for a single adapter, and port 1, 2, 3, 4 in order for several), and a picker chooses which adapter the "From GBA cartridge" buttons read. Keys, screen mirroring and cartridge reads all follow that assignment. |
 | **Diagnostics** | `User/Logs/GBLink.log` records the adapter, the controller poll rate, key changes and mirroring statistics. |
 
 ### How to use it
@@ -109,8 +110,8 @@ using a real GBA needs the adapter.
 
 ### Changes by patch
 
-The fork is a set of patches (`patches/0001`-`0197`) applied on a pinned
-Dolphin base. The GB-Link work is patches **0184-0197**:
+The fork is a set of patches (`patches/0001`-`0198`) applied on a pinned
+Dolphin base. The GB-Link work is patches **0184-0198**:
 adapter and agent plumbing, controller, cartridge read, team-only read,
 diagnostics log, menu navigation, standby picture, team-code buttons
 (hidden by default), automatic team send on joining, and screen mirroring.

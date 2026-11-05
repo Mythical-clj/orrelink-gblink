@@ -1,0 +1,910 @@
+From a145eb3c918fb3c1aebaae434e12de387472dbfa Mon Sep 17 00:00:00 2001
+From: t <t@t>
+Date: Thu, 5 Nov 2026 14:19:05 -0600
+Subject: [PATCH] GB-Link: up to four adapters, each found by USB port and
+ assigned to a GBA port; launcher pickers
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01764cASb9aVVk2m6JupRMj5
+---
+ Source/Core/Core/HW/GBACore.cpp               |   2 +-
+ Source/Core/Core/HW/GBAPadEmu.cpp             |   2 +-
+ Source/Core/Core/HW/GCPadEmu.cpp              |   2 +-
+ .../DolphinQt/XDNetplay/XDLauncherDialog.cpp  |  97 ++++++
+ .../DolphinQt/XDNetplay/XDLauncherDialog.h    |  13 +
+ .../Core/InputCommon/GBLink/GBLinkManager.cpp | 319 ++++++++++++++++--
+ .../Core/InputCommon/GBLink/GBLinkManager.h   | 135 ++++++--
+ Source/Core/InputCommon/GBLink/UsbLink.cpp    |   6 +
+ Source/Core/InputCommon/GBLink/UsbLink.h      |   4 +
+ 9 files changed, 523 insertions(+), 57 deletions(-)
+
+diff --git a/Source/Core/Core/HW/GBACore.cpp b/Source/Core/Core/HW/GBACore.cpp
+index 69f745652..98054aa32 100644
+--- a/Source/Core/Core/HW/GBACore.cpp
++++ b/Source/Core/Core/HW/GBACore.cpp
+@@ -531,7 +531,7 @@ void Core::AddCallbacks()
+ #if defined(__LIBUSB__) && !defined(ANDROID)
+     // A real GBA acting as a controller shows this machine's own GBA screen.
+     if (core->m_device_number != Config::GBPLAYER_GBA_INDEX &&
+-        GBLink::Manager::Get().WantsMirrorFrames() &&
++        GBLink::Manager::Get().WantsMirrorFrames(static_cast<int>(core->m_device_number)) &&
+         (!NetPlay::IsNetPlayRunning() ||
+          NetPlay::GetPadDetails(static_cast<int>(core->m_device_number)).is_local))
+     {
+diff --git a/Source/Core/Core/HW/GBAPadEmu.cpp b/Source/Core/Core/HW/GBAPadEmu.cpp
+index 718bd2e77..1190e8be6 100644
+--- a/Source/Core/Core/HW/GBAPadEmu.cpp
++++ b/Source/Core/Core/HW/GBAPadEmu.cpp
+@@ -82,7 +82,7 @@ GCPadStatus GBAPad::GetInput()
+   // bits are already in GBA order: A, B, Select, Start, Right, Left, Up, Down, R, L.
+   {
+     u16 gba_keys = 0;
+-    if (GBLink::Manager::Get().GetPadKeys(&gba_keys))
++    if (GBLink::Manager::Get().GetPadKeys(m_index, &gba_keys))
+     {
+       static constexpr u16 key_to_pad[10] = {PAD_BUTTON_A,     PAD_BUTTON_B,     PAD_TRIGGER_Z,
+                                              PAD_BUTTON_START, PAD_BUTTON_RIGHT, PAD_BUTTON_LEFT,
+diff --git a/Source/Core/Core/HW/GCPadEmu.cpp b/Source/Core/Core/HW/GCPadEmu.cpp
+index aff13b0ed..61497a159 100644
+--- a/Source/Core/Core/HW/GCPadEmu.cpp
++++ b/Source/Core/Core/HW/GCPadEmu.cpp
+@@ -152,7 +152,7 @@ GCPadStatus GCPad::GetInput() const
+   if (m_index == 0 && GBLink::Manager::Get().IsMenuNavigation())
+   {
+     u16 gba_keys = 0;
+-    if (GBLink::Manager::Get().GetPadKeys(&gba_keys))
++    if (GBLink::Manager::Get().GetPadKeys(0, &gba_keys))
+     {
+       static constexpr u16 key_to_pad[10] = {PAD_BUTTON_A,     PAD_BUTTON_B,     PAD_TRIGGER_Z,
+                                              PAD_BUTTON_START, PAD_BUTTON_RIGHT, PAD_BUTTON_LEFT,
+diff --git a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
+index fef5ad6c3..b91975da7 100644
+--- a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
++++ b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
+@@ -16,6 +16,7 @@
+ #include <vector>
+ 
+ #include <QAbstractItemModel>
++#include <QAbstractItemView>
+ #include <QCheckBox>
+ #include <QHBoxLayout>
+ #include <QSpinBox>
+@@ -445,6 +446,56 @@ void XDLauncherDialog::CreateMainLayout()
+          "program and its buttons then play XD. Hold L + R + Start + Select for 2 seconds to "
+          "release it."));
+   gblink_layout->addWidget(m_gblink_status, 0, 0);
++  // Several adapters: each says which GBA port it plays, and one is picked for cartridge reads.
++  auto* adapters_layout = new QVBoxLayout;
++  adapters_layout->setContentsMargins(0, 0, 0, 0);
++  for (int i = 0; i < 4; i++)
++  {
++    auto& row = m_gblink_rows[i];
++    row.widget = new QWidget;
++    auto* row_layout = new QHBoxLayout(row.widget);
++    row_layout->setContentsMargins(0, 0, 0, 0);
++    row.label = new QLabel(tr("GB-Link %1 plays:").arg(i + 1));
++    row.port_combo = new QComboBox;
++    row.port_combo->addItem(tr("Automatic"), -2);
++    row.port_combo->addItem(tr("Every GBA port"), 0);
++    for (int port = 1; port <= 4; port++)
++      row.port_combo->addItem(tr("GBA port %1").arg(port), port);
++    row.port_combo->addItem(tr("Not used"), -1);
++    row.port_combo->setToolTip(
++        tr("Which emulated GBA this adapter and its GBA control. Automatic: a single adapter "
++           "plays every GBA port; with several, the first plays port 1, the second port 2, and so "
++           "on. Pick a port yourself if a battle puts a local player on a different one."));
++    row_layout->addWidget(row.label);
++    row_layout->addWidget(row.port_combo, 1);
++    row.widget->setVisible(false);
++    adapters_layout->addWidget(row.widget);
++    connect(row.port_combo, &QComboBox::activated, this, [this, i](int) {
++#ifdef ORRELINK_GBLINK
++      const int setting = m_gblink_rows[i].port_combo->currentData().toInt();
++      GBLink::Manager::Get().SetPortSetting(m_gblink_rows[i].key, setting);
++      QSettings().setValue(
++          QStringLiteral("xdnetplay/gblink/port/%1").arg(QString::fromStdString(m_gblink_rows[i].key)),
++          setting);
++#else
++      (void)i;
++#endif
++    });
++  }
++  m_gblink_read_row = new QWidget;
++  {
++    auto* read_layout = new QHBoxLayout(m_gblink_read_row);
++    read_layout->setContentsMargins(0, 0, 0, 0);
++    read_layout->addWidget(new QLabel(tr("Read cartridges with:")));
++    m_gblink_read_combo = new QComboBox;
++    m_gblink_read_combo->setToolTip(
++        tr("Which adapter the \"From GBA cartridge\" buttons use. Put that adapter's GBA at "
++           "the multiboot screen (power on holding START + SELECT) first."));
++    read_layout->addWidget(m_gblink_read_combo, 1);
++  }
++  m_gblink_read_row->setVisible(false);
++  adapters_layout->addWidget(m_gblink_read_row);
++  gblink_layout->addLayout(adapters_layout, 5, 0);
+   gblink_layout->addWidget(m_gblink_pad_check, 1, 0);
+   gblink_layout->addWidget(m_gblink_menu_check, 2, 0);
+   m_gblink_mirror_check = new QCheckBox(tr("Show my GBA's battle screen on my real GBA"));
+@@ -1275,6 +1326,49 @@ void XDLauncherDialog::RefreshGbLinkStatus()
+ #ifdef ORRELINK_GBLINK
+   const GBLink::Status status = GBLink::Manager::Get().GetStatus();
+   m_gblink_status->setText(QString::fromStdString(status.text));
++  {
++    const std::vector<GBLink::AdapterInfo> adapters = GBLink::Manager::Get().GetAdapters();
++    for (int i = 0; i < 4; i++)
++    {
++      auto& row = m_gblink_rows[i];
++      const bool present = i < static_cast<int>(adapters.size()) && adapters.size() > 1;
++      row.widget->setVisible(present);
++      if (i >= static_cast<int>(adapters.size()))
++        continue;
++      const GBLink::AdapterInfo& a = adapters[i];
++      if (row.key != a.key)
++      {
++        // A newly found adapter: restore the port the player chose for this USB port before.
++        row.key = a.key;
++        const QVariant saved = QSettings().value(
++            QStringLiteral("xdnetplay/gblink/port/%1").arg(QString::fromStdString(a.key)));
++        if (saved.isValid())
++          GBLink::Manager::Get().SetPortSetting(a.key, saved.toInt());
++        row.label->setToolTip(tr("USB port %1").arg(QString::fromStdString(a.key)));
++      }
++      const int setting = a.port_setting;
++      const int idx = row.port_combo->findData(setting);
++      if (idx >= 0 && row.port_combo->currentIndex() != idx && !row.port_combo->view()->isVisible())
++      {
++        const QSignalBlocker blocker(row.port_combo);
++        row.port_combo->setCurrentIndex(idx);
++      }
++    }
++    // The cartridge-read adapter list follows the adapters that exist.
++    const bool several = adapters.size() > 1;
++    m_gblink_read_row->setVisible(several);
++    if (several && m_gblink_read_combo->count() != static_cast<int>(adapters.size()))
++    {
++      const QString current = m_gblink_read_combo->currentData().toString();
++      m_gblink_read_combo->clear();
++      for (const GBLink::AdapterInfo& a : adapters)
++        m_gblink_read_combo->addItem(tr("GB-Link %1").arg(a.index + 1),
++                                     QString::fromStdString(a.key));
++      const int back = m_gblink_read_combo->findData(current);
++      if (back >= 0)
++        m_gblink_read_combo->setCurrentIndex(back);
++    }
++  }
+   // The pad checkbox mirrors the manager (the player can also release the GBA with the
+   // L+R+Start+Select combo, which turns the controller off inside the manager).
+   const bool enabled = GBLink::Manager::Get().IsControllerEnabled();
+@@ -1292,6 +1386,7 @@ void XDLauncherDialog::RefreshGbLinkStatus()
+   m_gblink_pad_check->setEnabled(false);
+   m_gblink_menu_check->setEnabled(false);
+   m_gblink_mirror_check->setEnabled(false);
++  m_gblink_read_row->setVisible(false);
+   m_save_row_port2.gblink_button->setEnabled(false);
+   m_save_row_port3.gblink_button->setEnabled(false);
+ #endif
+@@ -1320,6 +1415,8 @@ void XDLauncherDialog::OnImportFromGbLink(int device)
+   connect(progress, &QProgressDialog::canceled, this, [] { GBLink::Manager::Get().CancelDump(); });
+ 
+   const bool queued = GBLink::Manager::Get().RequestDump(
++      m_gblink_read_row->isVisible() ? m_gblink_read_combo->currentData().toString().toStdString() :
++                                       std::string(),
+       [this, device, progress_ptr](GBLink::DumpResult result) {
+         // Runs on the GB-Link thread. Keep a copy of the raw cartridge dump no matter what the
+         // import decides: the cartridge's own save is the one thing we cannot recreate.
+diff --git a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.h b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.h
+index 69f803303..37a15baa6 100644
+--- a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.h
++++ b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.h
+@@ -6,6 +6,8 @@
+ #include <memory>
+ #include <optional>
+ 
++#include <string>
++
+ #include <QDialog>
+ 
+ #include "DolphinQt/GameList/GameListModel.h"
+@@ -131,6 +133,17 @@ private:
+   ChecklistRow m_gba_input_row;
+ 
+   QLabel* m_gblink_status = nullptr;
++  // One row per possible GB-Link adapter (shown only while the adapter exists).
++  struct GbLinkAdapterRow
++  {
++    QWidget* widget = nullptr;
++    QLabel* label = nullptr;
++    QComboBox* port_combo = nullptr;
++    std::string key;
++  };
++  GbLinkAdapterRow m_gblink_rows[4];
++  QWidget* m_gblink_read_row = nullptr;
++  QComboBox* m_gblink_read_combo = nullptr;
+   QCheckBox* m_gblink_full_read_check = nullptr;
+   QCheckBox* m_gblink_menu_check = nullptr;
+   QCheckBox* m_gblink_mirror_check = nullptr;
+diff --git a/Source/Core/InputCommon/GBLink/GBLinkManager.cpp b/Source/Core/InputCommon/GBLink/GBLinkManager.cpp
+index b1795677d..8493fa21c 100644
+--- a/Source/Core/InputCommon/GBLink/GBLinkManager.cpp
++++ b/Source/Core/InputCommon/GBLink/GBLinkManager.cpp
+@@ -29,7 +29,7 @@ constexpr int kDumpWaitForGbaSeconds = 90;
+ constexpr int kDumpWaitForCartSeconds = 60;
+ constexpr int kPadBadPollsBeforeCheck = 20;
+ 
+-void LogLine(const std::string& s)
++void FileLog(const std::string& s)
+ {
+   INFO_LOG_FMT(CONTROLLERINTERFACE, "GBLink: {}", s);
+   // Also keep a plain file next to Dolphin's other logs; it works with logging switched off.
+@@ -54,18 +54,21 @@ void LogLine(const std::string& s)
+ }
+ }  // namespace
+ 
+-Manager& Manager::Get()
++Link::Link(Manager& owner, std::string key) : m_owner(owner), m_key(std::move(key))
+ {
+-  static Manager instance;
+-  return instance;
+ }
+ 
+-Manager::~Manager()
++Link::~Link()
+ {
+   Stop();
+ }
+ 
+-void Manager::Start()
++void Link::LogLine(const std::string& s) const
++{
++  FileLog("[" + m_key + "] " + s);
++}
++
++void Link::Start()
+ {
+   std::lock_guard lock(m_mutex);
+   if (m_running)
+@@ -76,7 +79,7 @@ void Manager::Start()
+   m_thread = std::thread([this] { Run(); });
+ }
+ 
+-void Manager::Stop()
++void Link::Stop()
+ {
+   {
+     std::lock_guard lock(m_mutex);
+@@ -94,13 +97,13 @@ void Manager::Stop()
+   m_pad_live = false;
+ }
+ 
+-Status Manager::GetStatus() const
++Status Link::GetStatus() const
+ {
+   std::lock_guard lock(m_mutex);
+   return m_status;
+ }
+ 
+-void Manager::SubmitMirrorFrame(int device, const uint32_t* xbgr, size_t count)
++void Link::SubmitMirrorFrame(int device, const uint32_t* xbgr, size_t count)
+ {
+   int expected = -1;
+   m_mirror_device.compare_exchange_strong(expected, device);
+@@ -109,7 +112,7 @@ void Manager::SubmitMirrorFrame(int device, const uint32_t* xbgr, size_t count)
+   m_mirror.SubmitFrame(xbgr, count);
+ }
+ 
+-void Manager::SetStatus(State state, std::string text)
++void Link::SetStatus(State state, std::string text)
+ {
+   std::lock_guard lock(m_mutex);
+   if (m_status.state != state || m_status.text != text)
+@@ -117,7 +120,7 @@ void Manager::SetStatus(State state, std::string text)
+   m_status = {state, std::move(text)};
+ }
+ 
+-bool Manager::GetPadKeys(uint16_t* keys) const
++bool Link::GetPadKeys(uint16_t* keys) const
+ {
+   m_query_count++;
+   if (!m_pad_live)
+@@ -127,13 +130,13 @@ bool Manager::GetPadKeys(uint16_t* keys) const
+   return true;
+ }
+ 
+-void Manager::SetControllerEnabled(bool enabled)
++void Link::SetControllerEnabled(bool enabled)
+ {
+   m_controller_enabled = enabled;
+   m_cv.notify_all();
+ }
+ 
+-bool Manager::RequestDump(std::function<void(DumpResult)> done, std::function<void(int)> progress,
++bool Link::RequestDump(std::function<void(DumpResult)> done, std::function<void(int)> progress,
+                           bool team_only)
+ {
+   {
+@@ -150,28 +153,29 @@ bool Manager::RequestDump(std::function<void(DumpResult)> done, std::function<vo
+   return true;
+ }
+ 
+-void Manager::CancelDump()
++void Link::CancelDump()
+ {
+   m_cancel_dump = true;
+   m_cv.notify_all();
+ }
+ 
+-bool Manager::IsDumpQueued() const
++bool Link::IsDumpQueued() const
+ {
+   std::lock_guard lock(m_mutex);
+   return m_dump != nullptr;
+ }
+ 
+-void Manager::WaitFor(int ms)
++void Link::WaitFor(int ms)
+ {
+   std::unique_lock lock(m_mutex);
+   m_cv.wait_for(lock, std::chrono::milliseconds(ms), [this] { return m_quit || m_dump; });
+ }
+ 
+-void Manager::Run()
++void Link::Run()
+ {
+   UsbLink usb;
+-  usb.SetLog(LogLine);
++  const LogFn log_fn = [this](const std::string& s) { LogLine(s); };
++  usb.SetLog(log_fn);
+   std::unique_ptr<GbaCartClient> cart;
+   bool agent_loaded = false;
+   bool agent_has_pad = false;
+@@ -214,12 +218,12 @@ void Manager::Run()
+     const std::vector<uint8_t> payload(data, data + size);
+     SetStatus(State::LoadingAgent, "Sending the OrreLink program to your GBA...");
+     std::string err;
+-    if (!Multiboot(usb, payload, &err, LogLine, 5))
++    if (!Multiboot(usb, payload, &err, log_fn, 5))
+     {
+       SetStatus(State::Error, "Could not load the GBA program: " + err);
+       return false;
+     }
+-    cart = std::make_unique<GbaCartClient>(usb, LogLine);
++    cart = std::make_unique<GbaCartClient>(usb, log_fn);
+     cart->SetExternalCancel(&m_cancel_dump);
+     if (!cart->Ping(15000))
+     {
+@@ -243,15 +247,24 @@ void Manager::Run()
+     {
+       m_pad_live = false;
+       std::string err;
+-      if (!usb.Open(&err))
++      bool opened = false;
++      for (const DeviceInfo& d : UsbLink::List())
++      {
++        if (d.Key() == m_key)
++        {
++          opened = usb.Open(&err, d.bus, d.address);
++          break;
++        }
++      }
++      if (!opened)
+       {
+         if (auto req = take_dump())
+         {
+           DumpResult r;
+-          r.error = "No GB-Link adapter found. Plug it in (and close the Cart Doctor browser tab).";
++          r.error = "This GB-Link adapter is not available. Plug it in (and close the Cart Doctor browser tab).";
+           req->done(std::move(r));
+         }
+-        SetStatus(State::NoAdapter, "No GB-Link adapter found");
++        SetStatus(State::NoAdapter, "GB-Link adapter not available");
+         WaitFor(1000);
+         continue;
+       }
+@@ -437,7 +450,7 @@ void Manager::Run()
+         uint16_t keys = 0;
+         uint32_t raw = 0;
+         stat_polls++;
+-        if (m_mirror_on && mirror_fails < 5 && m_mirror.NextPacket(&mirror_packet, 12))
++        if (m_owner.IsScreenMirror() && mirror_fails < 5 && m_mirror.NextPacket(&mirror_packet, 12))
+         {
+           uint16_t packet_keys = m_pad_keys;
+           if (cart->SendTiles(mirror_packet, &packet_keys))
+@@ -555,3 +568,261 @@ void Manager::Run()
+   usb.Close();
+ }
+ }  // namespace GBLink
++
++namespace GBLink
++{
++Manager& Manager::Get()
++{
++  static Manager instance;
++  return instance;
++}
++
++Manager::~Manager()
++{
++  Stop();
++}
++
++void Manager::Start()
++{
++  std::lock_guard lock(m_mutex);
++  if (m_running)
++    return;
++  m_quit = false;
++  m_running = true;
++  for (auto& l : m_owned)
++    l->Start();
++  m_thread = std::thread([this] { Supervise(); });
++}
++
++void Manager::Stop()
++{
++  {
++    std::lock_guard lock(m_mutex);
++    if (!m_running)
++      return;
++    m_quit = true;
++  }
++  m_cv.notify_all();
++  if (m_thread.joinable())
++    m_thread.join();
++  std::vector<Link*> links;
++  {
++    std::lock_guard lock(m_mutex);
++    m_running = false;
++    for (auto& l : m_owned)
++      links.push_back(l.get());
++  }
++  // The Links stay allocated (the emulator may still ask them for keys); they just stop.
++  for (Link* l : links)
++    l->Stop();
++}
++
++void Manager::Supervise()
++{
++  while (true)
++  {
++    {
++      std::vector<DeviceInfo> found = UsbLink::List();
++      std::sort(found.begin(), found.end(),
++                [](const DeviceInfo& a, const DeviceInfo& b) { return a.Key() < b.Key(); });
++      std::lock_guard lock(m_mutex);
++      if (m_quit)
++        return;
++      for (const DeviceInfo& d : found)
++      {
++        const std::string key = d.Key();
++        const bool known = std::any_of(m_owned.begin(), m_owned.end(),
++                                       [&](const auto& l) { return l->Key() == key; });
++        if (known || m_owned.size() >= size_t(kMaxAdapters))
++          continue;
++        auto link = std::make_unique<Link>(*this, key);
++        link->SetControllerEnabled(m_controller_wanted);
++        link->Start();
++        m_links[m_owned.size()] = link.get();
++        m_owned.push_back(std::move(link));
++      }
++    }
++    std::unique_lock lock(m_mutex);
++    m_cv.wait_for(lock, std::chrono::milliseconds(1000), [this] { return m_quit; });
++    if (m_quit)
++      return;
++  }
++}
++
++int Manager::LinkCount() const
++{
++  int n = 0;
++  for (const auto& slot : m_links)
++    n += slot.load() != nullptr;
++  return n;
++}
++
++int Manager::EffectivePort(int setting, int index) const
++{
++  if (setting != -2)
++    return setting;
++  return LinkCount() <= 1 ? 0 : index + 1;
++}
++
++Link* Manager::LinkFor(int device) const
++{
++  Link* all = nullptr;
++  for (int i = 0; i < kMaxAdapters; i++)
++  {
++    Link* l = m_links[i].load();
++    if (!l)
++      continue;
++    const int port = EffectivePort(l->PortSetting(), i);
++    if (port == device + 1)
++      return l;
++    if (port == 0 && !all)
++      all = l;
++  }
++  return all;
++}
++
++std::vector<AdapterInfo> Manager::GetAdapters() const
++{
++  std::vector<AdapterInfo> out;
++  for (int i = 0; i < kMaxAdapters; i++)
++  {
++    Link* l = m_links[i].load();
++    if (!l)
++      continue;
++    AdapterInfo info;
++    info.index = i;
++    info.key = l->Key();
++    info.status = l->GetStatus();
++    info.port_setting = l->PortSetting();
++    info.port = EffectivePort(info.port_setting, i);
++    out.push_back(std::move(info));
++  }
++  return out;
++}
++
++Status Manager::GetStatus() const
++{
++  const std::vector<AdapterInfo> adapters = GetAdapters();
++  if (adapters.empty())
++    return {State::NoAdapter, "No GB-Link adapter found"};
++  if (adapters.size() == 1)
++    return adapters[0].status;
++  const auto rank = [](State s) {
++    switch (s)
++    {
++    case State::ReadingCart:
++      return 7;
++    case State::ControllerActive:
++      return 6;
++    case State::LoadingAgent:
++      return 5;
++    case State::AgentIdle:
++      return 4;
++    case State::WaitingForGba:
++      return 3;
++    case State::Error:
++      return 2;
++    case State::NoAdapter:
++      return 1;
++    default:
++      return 0;
++    }
++  };
++  Status best = adapters[0].status;
++  std::string text;
++  for (const AdapterInfo& a : adapters)
++  {
++    if (rank(a.status.state) > rank(best.state))
++      best.state = a.status.state;
++    text += (text.empty() ? "" : "\n") + fmt::format("GB-Link {}: {}", a.index + 1, a.status.text);
++  }
++  best.text = std::move(text);
++  return best;
++}
++
++bool Manager::GetPadKeys(int device, uint16_t* keys) const
++{
++  Link* l = LinkFor(device);
++  return l && l->GetPadKeys(keys);
++}
++
++void Manager::SetControllerEnabled(bool enabled)
++{
++  m_controller_wanted = enabled;
++  for (auto& slot : m_links)
++  {
++    if (Link* l = slot.load())
++      l->SetControllerEnabled(enabled);
++  }
++}
++
++bool Manager::IsControllerEnabled() const
++{
++  bool any = false, have = false;
++  for (const auto& slot : m_links)
++  {
++    if (Link* l = slot.load())
++    {
++      have = true;
++      any = any || l->IsControllerEnabled();
++    }
++  }
++  return have ? any : m_controller_wanted.load();
++}
++
++void Manager::SetPortSetting(const std::string& key, int setting)
++{
++  for (auto& slot : m_links)
++  {
++    Link* l = slot.load();
++    if (l && l->Key() == key)
++      l->SetPortSetting(setting);
++  }
++}
++
++bool Manager::WantsMirrorFrames(int device) const
++{
++  if (!m_mirror_on)
++    return false;
++  Link* l = LinkFor(device);
++  return l && l->WantsMirrorFrames();
++}
++
++void Manager::SubmitMirrorFrame(int device, const uint32_t* xbgr, size_t count)
++{
++  if (Link* l = LinkFor(device))
++    l->SubmitMirrorFrame(device, xbgr, count);
++}
++
++bool Manager::RequestDump(const std::string& key, std::function<void(DumpResult)> done,
++                          std::function<void(int)> progress, bool team_only)
++{
++  for (auto& slot : m_links)
++  {
++    Link* l = slot.load();
++    if (l && (key.empty() || l->Key() == key))
++      return l->RequestDump(std::move(done), std::move(progress), team_only);
++  }
++  return false;
++}
++
++void Manager::CancelDump()
++{
++  for (auto& slot : m_links)
++  {
++    if (Link* l = slot.load())
++      l->CancelDump();
++  }
++}
++
++bool Manager::IsDumpQueued() const
++{
++  for (const auto& slot : m_links)
++  {
++    Link* l = slot.load();
++    if (l && l->IsDumpQueued())
++      return true;
++  }
++  return false;
++}
++}  // namespace GBLink
+diff --git a/Source/Core/InputCommon/GBLink/GBLinkManager.h b/Source/Core/InputCommon/GBLink/GBLinkManager.h
+index 8da408d3e..cd9d2dcdc 100644
+--- a/Source/Core/InputCommon/GBLink/GBLinkManager.h
++++ b/Source/Core/InputCommon/GBLink/GBLinkManager.h
+@@ -1,7 +1,8 @@
+ // Copyright 2026 OrreLink contributors
+ // SPDX-License-Identifier: GPL-3.0-or-later
+ 
+-// Owns the GB-Link USB adapter for the whole Dolphin process. One background thread:
++// Owns the GB-Link USB adapters (up to four) for the whole Dolphin process. Each adapter gets a
++// Link with its own background thread:
+ //  * finds the adapter (hot-plug),
+ //  * when the GBA sits at its multiboot-wait screen, sends it the OrreLink agent,
+ //  * keeps the GBA in controller mode and publishes its key state (read by GBAPad),
+@@ -11,6 +12,7 @@
+ #pragma once
+ 
+ #include <atomic>
++#include <array>
+ #include <condition_variable>
+ #include <cstdint>
+ #include <functional>
+@@ -53,52 +55,40 @@ struct DumpResult
+   bool partial = false;
+ };
+ 
+-class Manager
++class Manager;
++
++// One GB-Link adapter and the GBA connected to it, found by its USB port (key).
++class Link
+ {
+ public:
+-  static Manager& Get();
++  Link(Manager& owner, std::string key);
++  ~Link();
++  Link(const Link&) = delete;
++  Link& operator=(const Link&) = delete;
+ 
+   void Start();
+   void Stop();
+ 
++  const std::string& Key() const { return m_key; }
+   Status GetStatus() const;
+-
+-  // Live controller state; false when no GBA is acting as a controller right now.
+-  // keys: bit0 A, 1 B, 2 Select, 3 Start, 4 Right, 5 Left, 6 Up, 7 Down, 8 R, 9 L.
+   bool GetPadKeys(uint16_t* keys) const;
+ 
+   void SetControllerEnabled(bool enabled);
+   bool IsControllerEnabled() const { return m_controller_enabled; }
+ 
+-  // When on, the real GBA's buttons also drive the GameCube pad on port 1 (menu navigation).
+-  void SetMenuNavigation(bool on) { m_menu_nav = on; }
+-  bool IsMenuNavigation() const { return m_menu_nav; }
++  // Which emulated GBA this adapter plays: -2 automatic, -1 none, 0 every GBA, 1-4 that port.
++  void SetPortSetting(int setting) { m_port_setting = setting; }
++  int PortSetting() const { return m_port_setting; }
+ 
+-  // Show the emulated GBA's screen on the real GBA while it is a controller. Frames come from
+-  // the emulated GBA the real one controls (SubmitMirrorFrame, emulation thread).
+-  void SetScreenMirror(bool on) { m_mirror_on = on; }
+-  bool IsScreenMirror() const { return m_mirror_on; }
+-  // True while the screen is being mirrored (cheap; the emulator checks it every frame).
+-  bool WantsMirrorFrames() const { return m_mirror_on && m_pad_live; }
+-  // |device| is the emulated GBA's index; the first one to submit becomes the mirrored one until
+-  // the controller reconnects. |xbgr| is 240*160 mGBA pixels.
++  bool WantsMirrorFrames() const { return m_pad_live; }
+   void SubmitMirrorFrame(int device, const uint32_t* xbgr, size_t count);
+ 
+-  // Asynchronous, read-only cartridge save dump. |done| runs on the manager thread.
+-  // |progress| gets 0-100. Returns false if a dump is already queued.
+-  // team_only: read just the Gen 3 trainer + party sections when the OrreLink agent is running
+-  // (falls back to a full read for anything else).
+-  bool RequestDump(std::function<void(DumpResult)> done, std::function<void(int)> progress = {},
+-                   bool team_only = false);
++  bool RequestDump(std::function<void(DumpResult)> done, std::function<void(int)> progress,
++                   bool team_only);
+   void CancelDump();
+   bool IsDumpQueued() const;
+ 
+ private:
+-  Manager() = default;
+-  ~Manager();
+-  Manager(const Manager&) = delete;
+-  Manager& operator=(const Manager&) = delete;
+-
+   struct DumpRequest
+   {
+     std::function<void(DumpResult)> done;
+@@ -108,9 +98,12 @@ private:
+ 
+   void Run();
+   void SetStatus(State state, std::string text);
++  void LogLine(const std::string& s) const;
+   // Waits up to ms; returns early on quit or a queued dump.
+   void WaitFor(int ms);
+ 
++  Manager& m_owner;
++  const std::string m_key;
+   mutable std::mutex m_mutex;
+   std::condition_variable m_cv;
+   std::thread m_thread;
+@@ -121,13 +114,95 @@ private:
+   std::atomic<bool> m_cancel_dump{false};
+ 
+   std::atomic<bool> m_controller_enabled{true};
++  std::atomic<int> m_port_setting{-2};
+   std::atomic<bool> m_pad_live{false};
+-  std::atomic<bool> m_menu_nav{false};
+-  std::atomic<bool> m_mirror_on{true};
+   std::atomic<int> m_mirror_device{-1};
+   ScreenMirror m_mirror;
+   std::atomic<uint16_t> m_pad_keys{0};
+   mutable std::atomic<uint64_t> m_query_count{0};
+   mutable std::atomic<uint64_t> m_query_live{0};
+ };
++
++struct AdapterInfo
++{
++  int index = 0;        // 0-based, order of discovery; shown as "GB-Link <index+1>"
++  std::string key;      // USB port, e.g. "1-4.2"
++  Status status;
++  int port_setting = -2;  // what the player chose: -2 automatic, -1 none, 0 all, 1-4
++  int port = 0;           // what is in effect: -1 none, 0 every GBA, 1-4 that GBA port
++};
++
++// Up to four adapters: finds them by USB port, keeps one Link each, and routes the emulator's
++// questions (keys, frames) to the Link playing that emulated GBA.
++class Manager
++{
++public:
++  static constexpr int kMaxAdapters = 4;
++  static Manager& Get();
++
++  void Start();
++  void Stop();
++
++  // One summary for the launcher: the most active adapter's state, and a line per adapter.
++  Status GetStatus() const;
++  std::vector<AdapterInfo> GetAdapters() const;
++
++  // |device| is the emulated GBA's index (0-3). Live controller state; false when no GBA that
++  // plays this device is acting as a controller right now.
++  // keys: bit0 A, 1 B, 2 Select, 3 Start, 4 Right, 5 Left, 6 Up, 7 Down, 8 R, 9 L.
++  bool GetPadKeys(int device, uint16_t* keys) const;
++
++  // Applies to every adapter (an adapter released by the L+R+Start+Select combo stays released
++  // until this is turned on again).
++  void SetControllerEnabled(bool enabled);
++  bool IsControllerEnabled() const;
++
++  // The adapter at |key| plays GBA port |setting| (-2 automatic, -1 none, 0 every GBA, 1-4).
++  void SetPortSetting(const std::string& key, int setting);
++  // What a Link with |setting| at slot |index| actually plays right now.
++  int EffectivePort(int setting, int index) const;
++
++  // When on, the real GBA that plays GBA port 1 also drives the GameCube pad on port 1.
++  void SetMenuNavigation(bool on) { m_menu_nav = on; }
++  bool IsMenuNavigation() const { return m_menu_nav; }
++
++  // Show the emulated GBA's screen on the real GBA that plays it (SubmitMirrorFrame, called on
++  // the emulation thread with the emulated GBA's index and 240*160 mGBA pixels).
++  void SetScreenMirror(bool on) { m_mirror_on = on; }
++  bool IsScreenMirror() const { return m_mirror_on; }
++  bool WantsMirrorFrames(int device) const;
++  void SubmitMirrorFrame(int device, const uint32_t* xbgr, size_t count);
++
++  // Asynchronous, read-only cartridge save dump through the adapter at |key| (empty: the first
++  // one). |done| runs on that adapter's thread. |progress| gets 0-100. Returns false if a dump
++  // is already queued there or there is no such adapter.
++  // team_only: read just the Gen 3 trainer + party sections when the OrreLink agent is running
++  // (falls back to a full read for anything else).
++  bool RequestDump(const std::string& key, std::function<void(DumpResult)> done,
++                   std::function<void(int)> progress = {}, bool team_only = false);
++  void CancelDump();
++  bool IsDumpQueued() const;
++
++private:
++  Manager() = default;
++  ~Manager();
++  Manager(const Manager&) = delete;
++  Manager& operator=(const Manager&) = delete;
++
++  void Supervise();
++  // The Link that plays |device|, preferring one assigned to that exact port over "every GBA".
++  Link* LinkFor(int device) const;
++  int LinkCount() const;
++
++  mutable std::mutex m_mutex;
++  std::condition_variable m_cv;
++  std::thread m_thread;
++  bool m_quit = false;
++  bool m_running = false;
++  std::vector<std::unique_ptr<Link>> m_owned;      // guarded by m_mutex
++  std::array<std::atomic<Link*>, kMaxAdapters> m_links{};  // fixed slots, read without locks
++  std::atomic<bool> m_menu_nav{false};
++  std::atomic<bool> m_mirror_on{true};
++  std::atomic<bool> m_controller_wanted{true};
++};
+ }  // namespace GBLink
+diff --git a/Source/Core/InputCommon/GBLink/UsbLink.cpp b/Source/Core/InputCommon/GBLink/UsbLink.cpp
+index 0a620c944..cd179bdc0 100644
+--- a/Source/Core/InputCommon/GBLink/UsbLink.cpp
++++ b/Source/Core/InputCommon/GBLink/UsbLink.cpp
+@@ -78,6 +78,12 @@ std::vector<DeviceInfo> UsbLink::List(std::string* error)
+     info.bcd = d.bcdDevice;
+     info.bus = libusb_get_bus_number(list[i]);
+     info.address = libusb_get_device_address(list[i]);
++    {
++      uint8_t ports[8];
++      const int np = libusb_get_port_numbers(list[i], ports, 8);
++      for (int p = 0; p < np; p++)
++        info.port_path += (p ? "." : "") + std::to_string(ports[p]);
++    }
+     libusb_device_handle* h = nullptr;
+     if (libusb_open(list[i], &h) == 0)
+     {
+diff --git a/Source/Core/InputCommon/GBLink/UsbLink.h b/Source/Core/InputCommon/GBLink/UsbLink.h
+index e4540b67a..60e1c78c6 100644
+--- a/Source/Core/InputCommon/GBLink/UsbLink.h
++++ b/Source/Core/InputCommon/GBLink/UsbLink.h
+@@ -22,6 +22,10 @@ struct DeviceInfo
+   uint16_t vid = 0, pid = 0, bcd = 0;
+   uint8_t bus = 0, address = 0;
+   std::string product, manufacturer, serial;
++  // Where the adapter is plugged in, e.g. "1-4.2" (bus-port.port): the same USB port gives the
++  // same key every time, even though the bus address changes on replug.
++  std::string Key() const { return std::to_string(bus) + "-" + port_path; }
++  std::string port_path;
+   bool IsNewFirmware() const { return vid == 0x2FE3; }
+ };
+ 
+-- 
+2.43.0
+
