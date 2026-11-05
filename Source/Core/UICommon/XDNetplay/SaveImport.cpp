@@ -461,6 +461,75 @@ bool ImportTeamFromPartialSave(const std::string& partial_path, const std::strin
   const auto bundle = PartyBundle::Extract(*save, &parse_error);
   if (!bundle)
     return fail(parse_error);
+  return ImportTeamText(PartyBundle::Base64Encode(*bundle), built_path, device, status, error);
+#endif
+}
+
+bool TeamTextFromSave(int device, std::string* team_text, std::string* summary, std::string* error)
+{
+  const auto fail = [error](std::string message) {
+    if (error)
+      *error = std::move(message);
+    return false;
+  };
+#ifndef HAS_LIBMGBA
+  (void)device;
+  (void)team_text;
+  (void)summary;
+  return fail("this build has no GBA support");
+#else
+  const std::string path = SavePathForDevice(device);
+  if (path.empty() || !File::Exists(path))
+    return fail("that port has no save yet — import your save first");
+  std::string parse_error;
+  const auto save = LoadSaveFile(path, &parse_error);
+  if (!save)
+    return fail("the save could not be read (" + parse_error + ")");
+  const auto bundle = PartyBundle::Extract(*save, &parse_error);
+  if (!bundle)
+    return fail(parse_error);
+  const auto decoded = PartyBundle::Validate(*bundle, &parse_error);
+  if (!decoded)
+    return fail(parse_error);
+  *team_text = PartyBundle::Base64Encode(*bundle);
+  if (summary)
+    *summary = fmt::format("{} · {} Pokémon", decoded->trainer_name, decoded->mons.size());
+  return true;
+#endif
+}
+
+bool ImportTeamText(const std::string& team_text, const std::string& built_path, int device,
+                    std::string* status, std::string* error)
+{
+  const auto fail = [error](std::string message) {
+    if (error)
+      *error = std::move(message);
+    return false;
+  };
+  if (device != 1 && device != 2)
+    return fail(fmt::format("no such GBA socket ({})", device));
+#ifndef HAS_LIBMGBA
+  (void)team_text;
+  (void)built_path;
+  (void)status;
+  return fail("this build has no GBA support");
+#else
+  std::string text = team_text;
+  constexpr std::string_view prefix = "SaveBundle:";
+  if (text.starts_with(prefix))
+    text.erase(0, prefix.size());
+  std::string compact;
+  for (const char ch : text)
+  {
+    if (ch != ' ' && ch != '\n' && ch != '\r' && ch != '\t')
+      compact += ch;
+  }
+  std::string parse_error;
+  const auto bundle = PartyBundle::Base64Decode(compact);
+  if (!bundle)
+    return fail("that is not a valid team code");
+  if (!PartyBundle::Validate(*bundle, &parse_error))
+    return fail("that team failed validation: " + parse_error);
 
   const std::string template_path =
       File::GetSysDirectory() +
