@@ -158,6 +158,7 @@ static int CmdPad(bool trace, int wait_s, int seconds)
     mirror.Reset();
     std::vector<uint32_t> frame(240 * 160), packet;
     long sent = 0, failed = 0, sent_tiles = 0;
+    double send_ms = 0;
     int last_step = -1;
     while (std::chrono::steady_clock::now() - t0 < std::chrono::seconds(seconds))
     {
@@ -188,7 +189,10 @@ static int CmdPad(bool trace, int wait_s, int seconds)
         }
         if (mirror.NextPacket(&packet, 12))
         {
-          if (cart.SendTiles(packet, &keys))
+          const auto s0 = std::chrono::steady_clock::now();
+          const bool packet_ok = cart.SendTiles(packet, &keys);
+          send_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - s0).count();
+          if (packet_ok)
           {
             mirror.PacketAcked();
             sent++;
@@ -227,7 +231,7 @@ static int CmdPad(bool trace, int wait_s, int seconds)
     const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     if (g_mirror_test)
       Log("mirror: " + std::to_string(sent) + " packets (" + std::to_string(sent_tiles) + " tiles) acknowledged, " +
-          std::to_string(failed) + " failed");
+          std::to_string(failed) + " failed, " + std::to_string(sent + failed ? int(send_ms / (sent + failed)) : 0) + " ms per packet");
     Log("polls: " + std::to_string(polls) + "  (" + std::to_string(int(polls / secs)) + "/s)");
     cart.LeavePadMode();
     Log("left controller mode");

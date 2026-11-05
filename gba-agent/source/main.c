@@ -550,13 +550,15 @@ static void padLoop(void)
 				u32 check = linkXfer(PAD_MAGIC | ((seq & 0xF) << 12) | keys);
 				seq++;
 				u32 ok = (check == xsum);
-				/* This reply tells the page whether the packet arrived intact. */
-				linkXfer(PAD_ACK | ok);
+				/* Apply first, then answer: the program runs from slow memory and
+				 * drawing a packet takes a good while, so the page waits for the
+				 * reply to this packet before it clocks anything else. */
 				if(ok)
 				{
 					applyTiles(buf, n);
 					REG_DISPCNT = 0x0404; /* Mode 4, BG2 on */
 				}
+				linkXfer(PAD_ACK | ok);
 			}
 		}
 		held = (keys == PAD_EXIT_KEYS) ? held + 1 : 0;
