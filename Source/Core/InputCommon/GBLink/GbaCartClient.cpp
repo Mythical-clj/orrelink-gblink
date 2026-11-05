@@ -222,7 +222,7 @@ bool GbaCartClient::SendTiles(const std::vector<uint32_t>& tiles, uint16_t* keys
   if (n == 0 || n > kTilesPerPacket || tiles.size() != n * kTileWords)
     return false;
   std::vector<uint32_t> tx;
-  tx.reserve(tiles.size() + 3);
+  tx.reserve(tiles.size() + 2);
   tx.push_back(M_TILES | uint32_t(n));
   uint32_t xsum = 0;
   for (const uint32_t w : tiles)
@@ -231,9 +231,8 @@ bool GbaCartClient::SendTiles(const std::vector<uint32_t>& tiles, uint16_t* keys
     xsum ^= w;
   }
   tx.push_back(xsum);
-  tx.push_back(M_POLL);  // the GBA's acknowledgement arrives in this exchange
   const auto resp = XferBatch(tx);
-  for (size_t i = resp.size() - 1; i-- > 0;)
+  for (size_t i = resp.size(); i-- > 0;)
   {
     if ((resp[i] & 0xFFFF0000u) == PAD_MAGIC)
     {
@@ -241,7 +240,18 @@ bool GbaCartClient::SendTiles(const std::vector<uint32_t>& tiles, uint16_t* keys
       break;
     }
   }
-  return resp.back() == (PAD_ACK | 1u);
+  // The GBA draws the tiles from slow memory and only then answers, so give it time and ask
+  // again if it is still busy (a busy GBA answers 0xFFFFFFFF).
+  for (int attempt = 0; attempt < 6; attempt++)
+  {
+    std::this_thread::sleep_for(std::chrono::milliseconds(attempt == 0 ? 2 : 4));
+    const uint32_t reply = XferBatch({M_POLL}).at(0);
+    if ((reply & 0xFFFF0000u) == PAD_ACK)
+      return (reply & 1u) != 0;
+    if ((reply & 0xFFFF0000u) == PAD_MAGIC)
+      *keys = static_cast<uint16_t>(reply & 0x03FF);
+  }
+  return false;
 }
 
 void GbaCartClient::LeavePadMode()
