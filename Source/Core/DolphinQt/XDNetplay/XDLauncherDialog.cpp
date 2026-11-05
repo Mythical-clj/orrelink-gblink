@@ -1457,7 +1457,7 @@ void XDLauncherDialog::OnShareTeam()
 
   m_share_team_button->setEnabled(false);
   QPointer<XDLauncherDialog> self(this);
-  const std::string url = (hub + QStringLiteral("/api/teams")).toStdString();
+  const std::string url = QString(hub + QStringLiteral("/api/teams")).toStdString();
   const std::string body = "{\"team\":\"" + team_text + "\"}";
   std::thread([self, url, body, summary] {
     Common::HttpRequest request;
@@ -1521,7 +1521,7 @@ void XDLauncherDialog::OnLoadTeamCode()
 
   m_load_team_button->setEnabled(false);
   QPointer<XDLauncherDialog> self(this);
-  const std::string url = (hub + QStringLiteral("/api/teams/") + code).toStdString();
+  const std::string url = QString(hub + QStringLiteral("/api/teams/") + code).toStdString();
   std::thread([self, url] {
     Common::HttpRequest request;
     request.FollowRedirects();
