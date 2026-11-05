@@ -86,7 +86,7 @@
 #if defined(__LIBUSB__) && !defined(ANDROID)
 #define ORRELINK_GBLINK 1
 #include <QDateTime>
-#include "InputCommon/GBLink/Manager.h"
+#include "InputCommon/GBLink/GBLinkManager.h"
 #endif
 
 namespace

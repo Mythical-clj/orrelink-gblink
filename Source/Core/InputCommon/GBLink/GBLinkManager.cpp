@@ -1,7 +1,7 @@
 // Copyright 2026 OrreLink contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "InputCommon/GBLink/Manager.h"
+#include "InputCommon/GBLink/GBLinkManager.h"
 
 #include <chrono>
 #include <utility>
