@@ -19,6 +19,7 @@
 #include <QCheckBox>
 #include <QHBoxLayout>
 #include <QSpinBox>
+#include <QClipboard>
 #include <QDesktopServices>
 #include <QDir>
 #include <QComboBox>
@@ -27,6 +28,11 @@
 #include <QGridLayout>
 #include <QGuiApplication>
 #include <QGroupBox>
+#include <QInputDialog>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QRegularExpression>
+#include <QSettings>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
@@ -47,6 +53,7 @@
 
 #include "Common/Config/Config.h"
 #include "Common/FileUtil.h"
+#include "Common/HttpRequest.h"
 #include "Common/IniFile.h"
 #include "Common/IOFile.h"
 #include "Common/StringUtil.h"
@@ -478,6 +485,25 @@ void XDLauncherDialog::CreateMainLayout()
   saves_box->setLayout(saves_layout);
   layout->addWidget(saves_box);
 
+  auto* team_box = new QGroupBox(tr("Team sharing"));
+  auto* team_layout = new QGridLayout;
+  team_layout->addWidget(
+      MakeNoteLabel(tr("Send your team to a friend as an 8-letter code, or load a team code you "
+                       "were given into your save (GBA port 2). Your save file is never uploaded: "
+                       "only your Pokémon and trainer name are shared.")),
+      0, 0, 1, 2);
+  m_share_team_button = new NonDefaultQPushButton(tr("Share my team..."));
+  m_share_team_button->setToolTip(
+      tr("Uploads your party and trainer name (from your GBA port 2 save) and gives you a code."));
+  m_load_team_button = new NonDefaultQPushButton(tr("Load team code..."));
+  m_load_team_button->setToolTip(
+      tr("Replaces the team in your GBA port 2 save with the one behind a code. The replaced save "
+         "is backed up first."));
+  team_layout->addWidget(m_share_team_button, 1, 0);
+  team_layout->addWidget(m_load_team_button, 1, 1);
+  team_box->setLayout(team_layout);
+  layout->addWidget(team_box);
+
   auto* battle_box = new QGroupBox(tr("Battle"));
   auto* battle_layout = new QGridLayout;
   m_boot_button = new NonDefaultQPushButton(tr("Boot Pokémon XD (solo)"));
@@ -908,6 +934,8 @@ void XDLauncherDialog::ConnectWidgets()
           [this] { OnImportFromGbLink(1); });
   connect(m_save_row_port3.gblink_button, &QPushButton::clicked, this,
           [this] { OnImportFromGbLink(2); });
+  connect(m_share_team_button, &QPushButton::clicked, this, &XDLauncherDialog::OnShareTeam);
+  connect(m_load_team_button, &QPushButton::clicked, this, &XDLauncherDialog::OnLoadTeamCode);
   connect(m_gblink_pad_check, &QCheckBox::toggled, this, [](bool on) {
 #ifdef ORRELINK_GBLINK
     GBLink::Manager::Get().SetControllerEnabled(on);
@@ -1355,6 +1383,165 @@ void XDLauncherDialog::OnImportFromGbLink(int device)
   ModalMessageBox::warning(this, tr("OrreLink"),
                            tr("GB-Link support is not available in this build."));
 #endif
+}
+
+// The OrreLink Hub (a small web service) stores shared teams under 8-letter codes. Its address is
+// kept in the launcher's settings; until a default is published the first use asks for it.
+constexpr const char* DEFAULT_HUB_URL = "";
+
+QString XDLauncherDialog::HubUrl()
+{
+  auto& settings = Settings::GetQSettings();
+  QString url = settings.value(QStringLiteral("xdnetplay/huburl"), QString::fromUtf8(DEFAULT_HUB_URL))
+                    .toString()
+                    .trimmed();
+  if (url.isEmpty())
+  {
+    bool ok = false;
+    url = QInputDialog::getText(this, tr("OrreLink Hub"),
+                                tr("Address of the OrreLink Hub (for example "
+                                   "https://launcher.gblink.io/orrelink):"),
+                                QLineEdit::Normal, QString(), &ok)
+              .trimmed();
+    if (!ok || url.isEmpty())
+      return {};
+    settings.setValue(QStringLiteral("xdnetplay/huburl"), url);
+  }
+  while (url.endsWith(QLatin1Char('/')))
+    url.chop(1);
+  if (!url.startsWith(QStringLiteral("http://")) && !url.startsWith(QStringLiteral("https://")))
+    url.prepend(QStringLiteral("https://"));
+  return url;
+}
+
+void XDLauncherDialog::OnShareTeam()
+{
+  std::string team_text;
+  std::string summary;
+  std::string error;
+  if (!XDNetplay::SaveImport::TeamTextFromSave(1, &team_text, &summary, &error))
+  {
+    ModalMessageBox::warning(this, tr("OrreLink"),
+                             tr("Could not read your team:\n\n%1").arg(QString::fromStdString(error)));
+    return;
+  }
+  const QString hub = HubUrl();
+  if (hub.isEmpty())
+    return;
+
+  m_share_team_button->setEnabled(false);
+  QPointer<XDLauncherDialog> self(this);
+  const std::string url = (hub + QStringLiteral("/api/teams")).toStdString();
+  const std::string body = "{\"team\":\"" + team_text + "\"}";
+  std::thread([self, url, body, summary] {
+    Common::HttpRequest request;
+    request.FollowRedirects();
+    Common::HttpRequest::Response response =
+        request.Post(url, body, {{"Content-Type", "application/json"}});
+    if (!self)
+      return;
+    QueueOnObject(self.data(), [self, response = std::move(response), summary] {
+      if (!self)
+        return;
+      self->m_share_team_button->setEnabled(true);
+      if (!response)
+      {
+        ModalMessageBox::warning(self, tr("OrreLink"),
+                                 tr("Could not reach the OrreLink Hub. Check your connection and "
+                                    "the Hub address, then try again."));
+        return;
+      }
+      const QJsonObject json =
+          QJsonDocument::fromJson(QByteArray(reinterpret_cast<const char*>(response->data()),
+                                             static_cast<qsizetype>(response->size())))
+              .object();
+      const QString code = json.value(QStringLiteral("code")).toString();
+      if (code.isEmpty())
+      {
+        ModalMessageBox::warning(
+            self, tr("OrreLink"),
+            tr("The Hub did not accept the team: %1").arg(json.value(QStringLiteral("error")).toString()));
+        return;
+      }
+      QGuiApplication::clipboard()->setText(code);
+      ModalMessageBox::information(
+          self, tr("OrreLink"),
+          tr("Your team (%1) is shared.\n\nTeam code: %2\n\nThe code is copied to your clipboard. "
+             "Send it to your opponent; they enter it with \"Load team code...\".")
+              .arg(QString::fromStdString(summary), code));
+    });
+  }).detach();
+}
+
+void XDLauncherDialog::OnLoadTeamCode()
+{
+  bool ok = false;
+  const QString input = QInputDialog::getText(this, tr("Load team code"),
+                                              tr("Team code (8 letters and numbers) or link:"),
+                                              QLineEdit::Normal, QString(), &ok);
+  if (!ok)
+    return;
+  static const QRegularExpression code_re(QStringLiteral("([A-Za-z0-9]{8})\\s*$"));
+  const auto match = code_re.match(input.trimmed());
+  if (!match.hasMatch())
+  {
+    ModalMessageBox::warning(this, tr("OrreLink"), tr("That does not look like a team code."));
+    return;
+  }
+  const QString code = match.captured(1).toUpper();
+  const QString hub = HubUrl();
+  if (hub.isEmpty())
+    return;
+
+  m_load_team_button->setEnabled(false);
+  QPointer<XDLauncherDialog> self(this);
+  const std::string url = (hub + QStringLiteral("/api/teams/") + code).toStdString();
+  std::thread([self, url] {
+    Common::HttpRequest request;
+    request.FollowRedirects();
+    Common::HttpRequest::Response response = request.Get(url);
+    const s32 http_code = request.GetLastResponseCode();
+    if (!self)
+      return;
+    QueueOnObject(self.data(), [self, response = std::move(response), http_code] {
+      if (!self)
+        return;
+      self->m_load_team_button->setEnabled(true);
+      const QJsonObject json =
+          response ? QJsonDocument::fromJson(
+                         QByteArray(reinterpret_cast<const char*>(response->data()),
+                                    static_cast<qsizetype>(response->size())))
+                         .object() :
+                     QJsonObject();
+      const QString team = json.value(QStringLiteral("team")).toString();
+      if (team.isEmpty())
+      {
+        ModalMessageBox::warning(
+            self, tr("OrreLink"),
+            response ? tr("That team code was not found (codes expire after 30 days).") :
+                       tr("Could not reach the OrreLink Hub (HTTP %1).").arg(http_code));
+        return;
+      }
+      if (ModalMessageBox::question(
+              self, tr("OrreLink"),
+              tr("Replace the team in your GBA port 2 save with this team?\n\nYour current save is "
+                 "backed up first, and \"Restore default\" brings back the bundled one.")) !=
+          ModalMessageBox::Yes)
+        return;
+      std::string status;
+      std::string error;
+      const std::string built = File::GetUserPath(D_USER_IDX) + "GBLink Dumps/team-code.sav";
+      if (!XDNetplay::SaveImport::ImportTeamText(team.toStdString(), built, 1, &status, &error))
+      {
+        ModalMessageBox::warning(self, tr("OrreLink"),
+                                 tr("Could not load that team:\n\n%1").arg(QString::fromStdString(error)));
+        return;
+      }
+      ModalMessageBox::information(self, tr("OrreLink"),
+                                   tr("Team loaded.\n\n%1").arg(QString::fromStdString(status)));
+      self->RefreshChecklist();
+    });
+  }).detach();
 }
 
 void XDLauncherDialog::OnRestoreDefaultSave(int device)
