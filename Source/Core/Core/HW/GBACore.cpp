@@ -40,6 +40,10 @@
 #include "Core/NetPlayProto.h"
 #include "Core/System.h"
 
+#if defined(__LIBUSB__) && !defined(ANDROID)
+#include "InputCommon/GBLink/GBLinkManager.h"
+#endif
+
 #include "VideoCommon/OnScreenDisplay.h"
 
 #ifdef ANDROID
@@ -524,6 +528,18 @@ void Core::AddCallbacks()
     auto core = static_cast<Core*>(context);
     if (auto host = core->m_host.lock())
       host->FrameEnded(core->m_video_buffer);
+#if defined(__LIBUSB__) && !defined(ANDROID)
+    // A real GBA acting as a controller shows this machine's own GBA screen.
+    if (core->m_device_number != Config::GBPLAYER_GBA_INDEX &&
+        GBLink::Manager::Get().WantsMirrorFrames() &&
+        (!NetPlay::IsNetPlayRunning() ||
+         NetPlay::GetPadDetails(static_cast<int>(core->m_device_number)).is_local))
+    {
+      GBLink::Manager::Get().SubmitMirrorFrame(static_cast<int>(core->m_device_number),
+                                               core->m_video_buffer.data(),
+                                               core->m_video_buffer.size());
+    }
+#endif
   };
   m_core->addCoreCallbacks(m_core, &callbacks);
 }
