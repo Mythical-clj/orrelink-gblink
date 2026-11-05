@@ -3,7 +3,7 @@ name: Build GB-Link tools
 on:
   push:
     branches: [gblink-dev]
-    paths: ["gblink-native/**", ".github/workflows/gblink-tools.yml"]
+    paths: ["gblink-native/**", "gba-agent/**", ".github/workflows/gblink-tools.yml"]
   workflow_dispatch:
 
 jobs:
@@ -32,3 +32,21 @@ jobs:
           path: |
             build/Release/gblink-probe.exe
             gblink-native/payload/LICENSE-cartdoctor-GPL3.txt
+
+  gba-agent:
+    runs-on: ubuntu-latest
+    container: devkitpro/devkitarm:latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install libgba
+        run: dkp-pacman -Sy --noconfirm libgba || dkp-pacman -S --noconfirm gba-dev
+      - name: Build
+        working-directory: gba-agent
+        run: |
+          export LIBGBA=$DEVKITPRO/libgba
+          make
+          ls -l *.gba
+      - uses: actions/upload-artifact@v4
+        with:
+          name: orrelink-agent-gba
+          path: gba-agent/orrelink-agent_mb.gba
