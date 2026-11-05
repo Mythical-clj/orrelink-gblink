@@ -17,6 +17,7 @@ class QLabel;
 class QLineEdit;
 class QPushButton;
 class QSpinBox;
+class QTimer;
 class QShowEvent;
 class TeamEditorDialog;
 
@@ -70,6 +71,7 @@ private:
     QLabel* state = nullptr;
     QPushButton* import_button = nullptr;
     QPushButton* restore_button = nullptr;
+    QPushButton* gblink_button = nullptr;
   };
 
   void CreateMainLayout();
@@ -98,6 +100,10 @@ private:
   // (the guest slot).
   void OnImportSave(int device);
   void OnRestoreDefaultSave(int device);
+  // Reads the save straight from a cartridge in a real GBA through a GB-Link adapter, keeps a
+  // backup copy, then runs it through the same import as OnImportSave.
+  void OnImportFromGbLink(int device);
+  void RefreshGbLinkStatus();
 
   void OnBootSolo();
   void OnHost();
@@ -120,6 +126,10 @@ private:
   ChecklistRow m_team_saves_row;
   ChecklistRow m_vs_save_row;
   ChecklistRow m_gba_input_row;
+
+  QLabel* m_gblink_status = nullptr;
+  QCheckBox* m_gblink_pad_check = nullptr;
+  QTimer* m_gblink_timer = nullptr;
 
   SaveSlotRow m_save_row_port2;
   SaveSlotRow m_save_row_port3;
