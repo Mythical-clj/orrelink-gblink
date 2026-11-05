@@ -1,0 +1,42 @@
+cmake_minimum_required(VERSION 3.20)
+project(gblink_native CXX)
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+find_package(PkgConfig QUIET)
+if(PkgConfig_FOUND)
+  pkg_check_modules(LIBUSB QUIET IMPORTED_TARGET libusb-1.0)
+endif()
+if(NOT LIBUSB_FOUND)
+  find_package(libusb CONFIG QUIET)
+  if(NOT libusb_FOUND)
+    find_path(LIBUSB_INCLUDE_DIR libusb.h PATH_SUFFIXES libusb-1.0)
+    find_library(LIBUSB_LIBRARY NAMES libusb-1.0 usb-1.0 libusb)
+  endif()
+endif()
+
+# Embed the Cart Doctor GBA dumper payload (GPL-3.0, see payload/) into the exe.
+file(READ ${CMAKE_CURRENT_SOURCE_DIR}/payload/gba-cart-dumper_mb.gba PAYLOAD_HEX HEX)
+string(LENGTH "${PAYLOAD_HEX}" PAYLOAD_HEXLEN)
+math(EXPR PAYLOAD_SIZE "${PAYLOAD_HEXLEN} / 2")
+string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," PAYLOAD_C "${PAYLOAD_HEX}")
+file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/payload_data.cpp
+  "extern const unsigned char kDumperPayload[] = {${PAYLOAD_C}};\n"
+  "extern const unsigned long kDumperPayloadSize = ${PAYLOAD_SIZE};\n")
+
+add_library(gblink STATIC src/UsbLink.cpp src/Spi32.cpp src/Multiboot.cpp src/GbaCartClient.cpp)
+target_include_directories(gblink PUBLIC src)
+add_executable(gblink-probe src/probe_main.cpp ${CMAKE_CURRENT_BINARY_DIR}/payload_data.cpp)
+target_link_libraries(gblink-probe PRIVATE gblink)
+
+if(LIBUSB_FOUND AND TARGET PkgConfig::LIBUSB)
+  target_link_libraries(gblink PUBLIC PkgConfig::LIBUSB)
+elseif(TARGET libusb::libusb)
+  target_link_libraries(gblink PUBLIC libusb::libusb)
+else()
+  target_include_directories(gblink PUBLIC ${LIBUSB_INCLUDE_DIR})
+  target_link_libraries(gblink PUBLIC ${LIBUSB_LIBRARY})
+endif()
+if(WIN32)
+  target_compile_definitions(gblink PUBLIC NOMINMAX)
+endif()

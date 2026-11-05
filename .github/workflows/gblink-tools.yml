@@ -1,0 +1,34 @@
+name: Build GB-Link tools
+
+on:
+  push:
+    branches: [gblink-dev]
+    paths: ["gblink-native/**", ".github/workflows/gblink-tools.yml"]
+  workflow_dispatch:
+
+jobs:
+  windows-probe:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install libusb (static)
+        shell: pwsh
+        run: vcpkg install libusb:x64-windows-static
+      - name: Configure
+        shell: pwsh
+        run: >
+          cmake -S gblink-native -B build -A x64
+          -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
+          -DVCPKG_TARGET_TRIPLET=x64-windows-static
+          -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
+      - name: Build
+        run: cmake --build build --config Release
+      - name: Smoke test (no adapter attached)
+        shell: pwsh
+        run: ./build/Release/gblink-probe.exe list; exit 0
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gblink-probe-win64
+          path: |
+            build/Release/gblink-probe.exe
+            gblink-native/payload/LICENSE-cartdoctor-GPL3.txt
