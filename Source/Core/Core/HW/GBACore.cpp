@@ -531,7 +531,7 @@ void Core::AddCallbacks()
 #if defined(__LIBUSB__) && !defined(ANDROID)
     // A real GBA acting as a controller shows this machine's own GBA screen.
     if (core->m_device_number != Config::GBPLAYER_GBA_INDEX &&
-        GBLink::Manager::Get().WantsMirrorFrames() &&
+        GBLink::Manager::Get().WantsMirrorFrames(static_cast<int>(core->m_device_number)) &&
         (!NetPlay::IsNetPlayRunning() ||
          NetPlay::GetPadDetails(static_cast<int>(core->m_device_number)).is_local))
     {

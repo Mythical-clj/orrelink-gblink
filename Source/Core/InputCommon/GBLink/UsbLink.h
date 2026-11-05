@@ -22,6 +22,10 @@ struct DeviceInfo
   uint16_t vid = 0, pid = 0, bcd = 0;
   uint8_t bus = 0, address = 0;
   std::string product, manufacturer, serial;
+  // Where the adapter is plugged in, e.g. "1-4.2" (bus-port.port): the same USB port gives the
+  // same key every time, even though the bus address changes on replug.
+  std::string Key() const { return std::to_string(bus) + "-" + port_path; }
+  std::string port_path;
   bool IsNewFirmware() const { return vid == 0x2FE3; }
 };
 

@@ -29,7 +29,7 @@ constexpr int kDumpWaitForGbaSeconds = 90;
 constexpr int kDumpWaitForCartSeconds = 60;
 constexpr int kPadBadPollsBeforeCheck = 20;
 
-void LogLine(const std::string& s)
+void FileLog(const std::string& s)
 {
   INFO_LOG_FMT(CONTROLLERINTERFACE, "GBLink: {}", s);
   // Also keep a plain file next to Dolphin's other logs; it works with logging switched off.
@@ -54,18 +54,21 @@ void LogLine(const std::string& s)
 }
 }  // namespace
 
-Manager& Manager::Get()
+Link::Link(Manager& owner, std::string key) : m_owner(owner), m_key(std::move(key))
 {
-  static Manager instance;
-  return instance;
 }
 
-Manager::~Manager()
+Link::~Link()
 {
   Stop();
 }
 
-void Manager::Start()
+void Link::LogLine(const std::string& s) const
+{
+  FileLog("[" + m_key + "] " + s);
+}
+
+void Link::Start()
 {
   std::lock_guard lock(m_mutex);
   if (m_running)
@@ -76,7 +79,7 @@ void Manager::Start()
   m_thread = std::thread([this] { Run(); });
 }
 
-void Manager::Stop()
+void Link::Stop()
 {
   {
     std::lock_guard lock(m_mutex);
@@ -94,13 +97,13 @@ void Manager::Stop()
   m_pad_live = false;
 }
 
-Status Manager::GetStatus() const
+Status Link::GetStatus() const
 {
   std::lock_guard lock(m_mutex);
   return m_status;
 }
 
-void Manager::SubmitMirrorFrame(int device, const uint32_t* xbgr, size_t count)
+void Link::SubmitMirrorFrame(int device, const uint32_t* xbgr, size_t count)
 {
   int expected = -1;
   m_mirror_device.compare_exchange_strong(expected, device);
@@ -109,7 +112,7 @@ void Manager::SubmitMirrorFrame(int device, const uint32_t* xbgr, size_t count)
   m_mirror.SubmitFrame(xbgr, count);
 }
 
-void Manager::SetStatus(State state, std::string text)
+void Link::SetStatus(State state, std::string text)
 {
   std::lock_guard lock(m_mutex);
   if (m_status.state != state || m_status.text != text)
@@ -117,7 +120,7 @@ void Manager::SetStatus(State state, std::string text)
   m_status = {state, std::move(text)};
 }
 
-bool Manager::GetPadKeys(uint16_t* keys) const
+bool Link::GetPadKeys(uint16_t* keys) const
 {
   m_query_count++;
   if (!m_pad_live)
@@ -127,13 +130,13 @@ bool Manager::GetPadKeys(uint16_t* keys) const
   return true;
 }
 
-void Manager::SetControllerEnabled(bool enabled)
+void Link::SetControllerEnabled(bool enabled)
 {
   m_controller_enabled = enabled;
   m_cv.notify_all();
 }
 
-bool Manager::RequestDump(std::function<void(DumpResult)> done, std::function<void(int)> progress,
+bool Link::RequestDump(std::function<void(DumpResult)> done, std::function<void(int)> progress,
                           bool team_only)
 {
   {
@@ -150,28 +153,29 @@ bool Manager::RequestDump(std::function<void(DumpResult)> done, std::function<vo
   return true;
 }
 
-void Manager::CancelDump()
+void Link::CancelDump()
 {
   m_cancel_dump = true;
   m_cv.notify_all();
 }
 
-bool Manager::IsDumpQueued() const
+bool Link::IsDumpQueued() const
 {
   std::lock_guard lock(m_mutex);
   return m_dump != nullptr;
 }
 
-void Manager::WaitFor(int ms)
+void Link::WaitFor(int ms)
 {
   std::unique_lock lock(m_mutex);
   m_cv.wait_for(lock, std::chrono::milliseconds(ms), [this] { return m_quit || m_dump; });
 }
 
-void Manager::Run()
+void Link::Run()
 {
   UsbLink usb;
-  usb.SetLog(LogLine);
+  const LogFn log_fn = [this](const std::string& s) { LogLine(s); };
+  usb.SetLog(log_fn);
   std::unique_ptr<GbaCartClient> cart;
   bool agent_loaded = false;
   bool agent_has_pad = false;
@@ -214,12 +218,12 @@ void Manager::Run()
     const std::vector<uint8_t> payload(data, data + size);
     SetStatus(State::LoadingAgent, "Sending the OrreLink program to your GBA...");
     std::string err;
-    if (!Multiboot(usb, payload, &err, LogLine, 5))
+    if (!Multiboot(usb, payload, &err, log_fn, 5))
     {
       SetStatus(State::Error, "Could not load the GBA program: " + err);
       return false;
     }
-    cart = std::make_unique<GbaCartClient>(usb, LogLine);
+    cart = std::make_unique<GbaCartClient>(usb, log_fn);
     cart->SetExternalCancel(&m_cancel_dump);
     if (!cart->Ping(15000))
     {
@@ -243,15 +247,24 @@ void Manager::Run()
     {
       m_pad_live = false;
       std::string err;
-      if (!usb.Open(&err))
+      bool opened = false;
+      for (const DeviceInfo& d : UsbLink::List())
+      {
+        if (d.Key() == m_key)
+        {
+          opened = usb.Open(&err, d.bus, d.address);
+          break;
+        }
+      }
+      if (!opened)
       {
         if (auto req = take_dump())
         {
           DumpResult r;
-          r.error = "No GB-Link adapter found. Plug it in (and close the Cart Doctor browser tab).";
+          r.error = "This GB-Link adapter is not available. Plug it in (and close the Cart Doctor browser tab).";
           req->done(std::move(r));
         }
-        SetStatus(State::NoAdapter, "No GB-Link adapter found");
+        SetStatus(State::NoAdapter, "GB-Link adapter not available");
         WaitFor(1000);
         continue;
       }
@@ -437,7 +450,7 @@ void Manager::Run()
         uint16_t keys = 0;
         uint32_t raw = 0;
         stat_polls++;
-        if (m_mirror_on && mirror_fails < 5 && m_mirror.NextPacket(&mirror_packet, 12))
+        if (m_owner.IsScreenMirror() && mirror_fails < 5 && m_mirror.NextPacket(&mirror_packet, 12))
         {
           uint16_t packet_keys = m_pad_keys;
           if (cart->SendTiles(mirror_packet, &packet_keys))
@@ -553,5 +566,263 @@ void Manager::Run()
     }
   }
   usb.Close();
+}
+}  // namespace GBLink
+
+namespace GBLink
+{
+Manager& Manager::Get()
+{
+  static Manager instance;
+  return instance;
+}
+
+Manager::~Manager()
+{
+  Stop();
+}
+
+void Manager::Start()
+{
+  std::lock_guard lock(m_mutex);
+  if (m_running)
+    return;
+  m_quit = false;
+  m_running = true;
+  for (auto& l : m_owned)
+    l->Start();
+  m_thread = std::thread([this] { Supervise(); });
+}
+
+void Manager::Stop()
+{
+  {
+    std::lock_guard lock(m_mutex);
+    if (!m_running)
+      return;
+    m_quit = true;
+  }
+  m_cv.notify_all();
+  if (m_thread.joinable())
+    m_thread.join();
+  std::vector<Link*> links;
+  {
+    std::lock_guard lock(m_mutex);
+    m_running = false;
+    for (auto& l : m_owned)
+      links.push_back(l.get());
+  }
+  // The Links stay allocated (the emulator may still ask them for keys); they just stop.
+  for (Link* l : links)
+    l->Stop();
+}
+
+void Manager::Supervise()
+{
+  while (true)
+  {
+    {
+      std::vector<DeviceInfo> found = UsbLink::List();
+      std::sort(found.begin(), found.end(),
+                [](const DeviceInfo& a, const DeviceInfo& b) { return a.Key() < b.Key(); });
+      std::lock_guard lock(m_mutex);
+      if (m_quit)
+        return;
+      for (const DeviceInfo& d : found)
+      {
+        const std::string key = d.Key();
+        const bool known = std::any_of(m_owned.begin(), m_owned.end(),
+                                       [&](const auto& l) { return l->Key() == key; });
+        if (known || m_owned.size() >= size_t(kMaxAdapters))
+          continue;
+        auto link = std::make_unique<Link>(*this, key);
+        link->SetControllerEnabled(m_controller_wanted);
+        link->Start();
+        m_links[m_owned.size()] = link.get();
+        m_owned.push_back(std::move(link));
+      }
+    }
+    std::unique_lock lock(m_mutex);
+    m_cv.wait_for(lock, std::chrono::milliseconds(1000), [this] { return m_quit; });
+    if (m_quit)
+      return;
+  }
+}
+
+int Manager::LinkCount() const
+{
+  int n = 0;
+  for (const auto& slot : m_links)
+    n += slot.load() != nullptr;
+  return n;
+}
+
+int Manager::EffectivePort(int setting, int index) const
+{
+  if (setting != -2)
+    return setting;
+  return LinkCount() <= 1 ? 0 : index + 1;
+}
+
+Link* Manager::LinkFor(int device) const
+{
+  Link* all = nullptr;
+  for (int i = 0; i < kMaxAdapters; i++)
+  {
+    Link* l = m_links[i].load();
+    if (!l)
+      continue;
+    const int port = EffectivePort(l->PortSetting(), i);
+    if (port == device + 1)
+      return l;
+    if (port == 0 && !all)
+      all = l;
+  }
+  return all;
+}
+
+std::vector<AdapterInfo> Manager::GetAdapters() const
+{
+  std::vector<AdapterInfo> out;
+  for (int i = 0; i < kMaxAdapters; i++)
+  {
+    Link* l = m_links[i].load();
+    if (!l)
+      continue;
+    AdapterInfo info;
+    info.index = i;
+    info.key = l->Key();
+    info.status = l->GetStatus();
+    info.port_setting = l->PortSetting();
+    info.port = EffectivePort(info.port_setting, i);
+    out.push_back(std::move(info));
+  }
+  return out;
+}
+
+Status Manager::GetStatus() const
+{
+  const std::vector<AdapterInfo> adapters = GetAdapters();
+  if (adapters.empty())
+    return {State::NoAdapter, "No GB-Link adapter found"};
+  if (adapters.size() == 1)
+    return adapters[0].status;
+  const auto rank = [](State s) {
+    switch (s)
+    {
+    case State::ReadingCart:
+      return 7;
+    case State::ControllerActive:
+      return 6;
+    case State::LoadingAgent:
+      return 5;
+    case State::AgentIdle:
+      return 4;
+    case State::WaitingForGba:
+      return 3;
+    case State::Error:
+      return 2;
+    case State::NoAdapter:
+      return 1;
+    default:
+      return 0;
+    }
+  };
+  Status best = adapters[0].status;
+  std::string text;
+  for (const AdapterInfo& a : adapters)
+  {
+    if (rank(a.status.state) > rank(best.state))
+      best.state = a.status.state;
+    text += (text.empty() ? "" : "\n") + fmt::format("GB-Link {}: {}", a.index + 1, a.status.text);
+  }
+  best.text = std::move(text);
+  return best;
+}
+
+bool Manager::GetPadKeys(int device, uint16_t* keys) const
+{
+  Link* l = LinkFor(device);
+  return l && l->GetPadKeys(keys);
+}
+
+void Manager::SetControllerEnabled(bool enabled)
+{
+  m_controller_wanted = enabled;
+  for (auto& slot : m_links)
+  {
+    if (Link* l = slot.load())
+      l->SetControllerEnabled(enabled);
+  }
+}
+
+bool Manager::IsControllerEnabled() const
+{
+  bool any = false, have = false;
+  for (const auto& slot : m_links)
+  {
+    if (Link* l = slot.load())
+    {
+      have = true;
+      any = any || l->IsControllerEnabled();
+    }
+  }
+  return have ? any : m_controller_wanted.load();
+}
+
+void Manager::SetPortSetting(const std::string& key, int setting)
+{
+  for (auto& slot : m_links)
+  {
+    Link* l = slot.load();
+    if (l && l->Key() == key)
+      l->SetPortSetting(setting);
+  }
+}
+
+bool Manager::WantsMirrorFrames(int device) const
+{
+  if (!m_mirror_on)
+    return false;
+  Link* l = LinkFor(device);
+  return l && l->WantsMirrorFrames();
+}
+
+void Manager::SubmitMirrorFrame(int device, const uint32_t* xbgr, size_t count)
+{
+  if (Link* l = LinkFor(device))
+    l->SubmitMirrorFrame(device, xbgr, count);
+}
+
+bool Manager::RequestDump(const std::string& key, std::function<void(DumpResult)> done,
+                          std::function<void(int)> progress, bool team_only)
+{
+  for (auto& slot : m_links)
+  {
+    Link* l = slot.load();
+    if (l && (key.empty() || l->Key() == key))
+      return l->RequestDump(std::move(done), std::move(progress), team_only);
+  }
+  return false;
+}
+
+void Manager::CancelDump()
+{
+  for (auto& slot : m_links)
+  {
+    if (Link* l = slot.load())
+      l->CancelDump();
+  }
+}
+
+bool Manager::IsDumpQueued() const
+{
+  for (const auto& slot : m_links)
+  {
+    Link* l = slot.load();
+    if (l && l->IsDumpQueued())
+      return true;
+  }
+  return false;
 }
 }  // namespace GBLink
