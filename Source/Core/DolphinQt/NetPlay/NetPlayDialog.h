@@ -120,6 +120,11 @@ private:
   void OnChat();
   void OnSubmitTeam();
   void OnSubmitHostTeam();
+  // Sends the party from the player's own port-2 save (the "Use my save" path of
+  // Submit Team) without a dialog. Returns true when a bundle was sent; messages
+  // say why not. Used by AutoSubmitSaveTeam on joining a room.
+  bool SendSaveTeam(bool announce_failures);
+  void AutoSubmitSaveTeam(int role);
   bool HostWriteAllowed();
   void ApplyHostTeam(const std::string& showdown_text, const std::string& trainer_name,
                      bool raise_to_level_100);
@@ -213,6 +218,8 @@ private:
   int m_player_count = 0;
   int m_old_player_count = 0;
   bool m_host_input_authority = false;
+  // The role the cartridge team was last auto-sent under (-1: not yet this room).
+  int m_auto_team_role = -1;
 
   StartGameCallback m_start_game_callback;
 };
