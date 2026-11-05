@@ -42,6 +42,9 @@
 
 #include "InputCommon/ControllerInterface/ControllerInterface.h"
 #include "InputCommon/GCAdapter.h"
+#if defined(__LIBUSB__) && !defined(ANDROID)
+#include "InputCommon/GBLink/Manager.h"
+#endif
 
 #include "UICommon/DiscordPresence.h"
 
@@ -186,6 +189,9 @@ void InitControllers(const WindowSystemInfo& wsi)
   GCAdapter::Init();
   Pad::Initialize();
   Pad::InitializeGBA();
+#if defined(__LIBUSB__) && !defined(ANDROID)
+  GBLink::Manager::Get().Start();
+#endif
   Keyboard::Initialize();
   Wiimote::Initialize(Wiimote::InitializeMode::DO_NOT_WAIT_FOR_WIIMOTES);
   HotkeyManagerEmu::Initialize();
@@ -194,6 +200,9 @@ void InitControllers(const WindowSystemInfo& wsi)
 
 void ShutdownControllers()
 {
+#if defined(__LIBUSB__) && !defined(ANDROID)
+  GBLink::Manager::Get().Stop();
+#endif
   Pad::Shutdown();
   Pad::ShutdownGBA();
   Keyboard::Shutdown();

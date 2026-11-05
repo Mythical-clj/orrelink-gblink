@@ -147,6 +147,23 @@ endif()
 
 if(NOT ANDROID)
   target_link_libraries(inputcommon PUBLIC LibUSB::LibUSB)
+  # GB-Link: native USB client for a real GBA (controller + cartridge save dump).
+  target_sources(inputcommon PRIVATE
+    GBLink/AgentPayloadData.cpp
+    GBLink/DumperPayloadData.cpp
+    GBLink/GbaCartClient.cpp
+    GBLink/GbaCartClient.h
+    GBLink/Manager.cpp
+    GBLink/Manager.h
+    GBLink/Multiboot.cpp
+    GBLink/Multiboot.h
+    GBLink/Payloads.cpp
+    GBLink/Payloads.h
+    GBLink/Spi32.cpp
+    GBLink/Spi32.h
+    GBLink/UsbLink.cpp
+    GBLink/UsbLink.h
+  )
 endif()
 
 if(LIBEVDEV_FOUND AND LIBUDEV_FOUND)
