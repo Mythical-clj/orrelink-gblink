@@ -16,6 +16,7 @@
 #include <vector>
 
 #include <QAbstractItemModel>
+#include <QAbstractItemView>
 #include <QCheckBox>
 #include <QHBoxLayout>
 #include <QSpinBox>
@@ -445,6 +446,56 @@ void XDLauncherDialog::CreateMainLayout()
          "program and its buttons then play XD. Hold L + R + Start + Select for 2 seconds to "
          "release it."));
   gblink_layout->addWidget(m_gblink_status, 0, 0);
+  // Several adapters: each says which GBA port it plays, and one is picked for cartridge reads.
+  auto* adapters_layout = new QVBoxLayout;
+  adapters_layout->setContentsMargins(0, 0, 0, 0);
+  for (int i = 0; i < 4; i++)
+  {
+    auto& ad = m_gblink_rows[i];
+    ad.widget = new QWidget;
+    auto* row_layout = new QHBoxLayout(ad.widget);
+    row_layout->setContentsMargins(0, 0, 0, 0);
+    ad.label = new QLabel(tr("GB-Link %1 plays:").arg(i + 1));
+    ad.port_combo = new QComboBox;
+    ad.port_combo->addItem(tr("Automatic"), -2);
+    ad.port_combo->addItem(tr("Every GBA port"), 0);
+    for (int port = 1; port <= 4; port++)
+      ad.port_combo->addItem(tr("GBA port %1").arg(port), port);
+    ad.port_combo->addItem(tr("Not used"), -1);
+    ad.port_combo->setToolTip(
+        tr("Which emulated GBA this adapter and its GBA control. Automatic: a single adapter "
+           "plays every GBA port; with several, the first plays port 1, the second port 2, and so "
+           "on. Pick a port yourself if a battle puts a local player on a different one."));
+    row_layout->addWidget(ad.label);
+    row_layout->addWidget(ad.port_combo, 1);
+    ad.widget->setVisible(false);
+    adapters_layout->addWidget(ad.widget);
+    connect(ad.port_combo, &QComboBox::activated, this, [this, i](int) {
+#ifdef ORRELINK_GBLINK
+      const int setting = m_gblink_rows[i].port_combo->currentData().toInt();
+      GBLink::Manager::Get().SetPortSetting(m_gblink_rows[i].key, setting);
+      QSettings().setValue(
+          QStringLiteral("xdnetplay/gblink/port/%1").arg(QString::fromStdString(m_gblink_rows[i].key)),
+          setting);
+#else
+      (void)i;
+#endif
+    });
+  }
+  m_gblink_read_row = new QWidget;
+  {
+    auto* read_layout = new QHBoxLayout(m_gblink_read_row);
+    read_layout->setContentsMargins(0, 0, 0, 0);
+    read_layout->addWidget(new QLabel(tr("Read cartridges with:")));
+    m_gblink_read_combo = new QComboBox;
+    m_gblink_read_combo->setToolTip(
+        tr("Which adapter the \"From GBA cartridge\" buttons use. Put that adapter's GBA at "
+           "the multiboot screen (power on holding START + SELECT) first."));
+    read_layout->addWidget(m_gblink_read_combo, 1);
+  }
+  m_gblink_read_row->setVisible(false);
+  adapters_layout->addWidget(m_gblink_read_row);
+  gblink_layout->addLayout(adapters_layout, 5, 0);
   gblink_layout->addWidget(m_gblink_pad_check, 1, 0);
   gblink_layout->addWidget(m_gblink_menu_check, 2, 0);
   m_gblink_mirror_check = new QCheckBox(tr("Show my GBA's battle screen on my real GBA"));
@@ -1275,6 +1326,49 @@ void XDLauncherDialog::RefreshGbLinkStatus()
 #ifdef ORRELINK_GBLINK
   const GBLink::Status status = GBLink::Manager::Get().GetStatus();
   m_gblink_status->setText(QString::fromStdString(status.text));
+  {
+    const std::vector<GBLink::AdapterInfo> adapters = GBLink::Manager::Get().GetAdapters();
+    for (int i = 0; i < 4; i++)
+    {
+      auto& row = m_gblink_rows[i];
+      const bool present = i < static_cast<int>(adapters.size()) && adapters.size() > 1;
+      row.widget->setVisible(present);
+      if (i >= static_cast<int>(adapters.size()))
+        continue;
+      const GBLink::AdapterInfo& a = adapters[i];
+      if (row.key != a.key)
+      {
+        // A newly found adapter: restore the port the player chose for this USB port before.
+        row.key = a.key;
+        const QVariant saved = QSettings().value(
+            QStringLiteral("xdnetplay/gblink/port/%1").arg(QString::fromStdString(a.key)));
+        if (saved.isValid())
+          GBLink::Manager::Get().SetPortSetting(a.key, saved.toInt());
+        row.label->setToolTip(tr("USB port %1").arg(QString::fromStdString(a.key)));
+      }
+      const int setting = a.port_setting;
+      const int idx = row.port_combo->findData(setting);
+      if (idx >= 0 && row.port_combo->currentIndex() != idx && !row.port_combo->view()->isVisible())
+      {
+        const QSignalBlocker blocker(row.port_combo);
+        row.port_combo->setCurrentIndex(idx);
+      }
+    }
+    // The cartridge-read adapter list follows the adapters that exist.
+    const bool several = adapters.size() > 1;
+    m_gblink_read_row->setVisible(several);
+    if (several && m_gblink_read_combo->count() != static_cast<int>(adapters.size()))
+    {
+      const QString current = m_gblink_read_combo->currentData().toString();
+      m_gblink_read_combo->clear();
+      for (const GBLink::AdapterInfo& a : adapters)
+        m_gblink_read_combo->addItem(tr("GB-Link %1").arg(a.index + 1),
+                                     QString::fromStdString(a.key));
+      const int back = m_gblink_read_combo->findData(current);
+      if (back >= 0)
+        m_gblink_read_combo->setCurrentIndex(back);
+    }
+  }
   // The pad checkbox mirrors the manager (the player can also release the GBA with the
   // L+R+Start+Select combo, which turns the controller off inside the manager).
   const bool enabled = GBLink::Manager::Get().IsControllerEnabled();
@@ -1292,6 +1386,7 @@ void XDLauncherDialog::RefreshGbLinkStatus()
   m_gblink_pad_check->setEnabled(false);
   m_gblink_menu_check->setEnabled(false);
   m_gblink_mirror_check->setEnabled(false);
+  m_gblink_read_row->setVisible(false);
   m_save_row_port2.gblink_button->setEnabled(false);
   m_save_row_port3.gblink_button->setEnabled(false);
 #endif
@@ -1320,6 +1415,8 @@ void XDLauncherDialog::OnImportFromGbLink(int device)
   connect(progress, &QProgressDialog::canceled, this, [] { GBLink::Manager::Get().CancelDump(); });
 
   const bool queued = GBLink::Manager::Get().RequestDump(
+      m_gblink_read_row->isVisible() ? m_gblink_read_combo->currentData().toString().toStdString() :
+                                       std::string(),
       [this, device, progress_ptr](GBLink::DumpResult result) {
         // Runs on the GB-Link thread. Keep a copy of the raw cartridge dump no matter what the
         // import decides: the cartridge's own save is the one thing we cannot recreate.

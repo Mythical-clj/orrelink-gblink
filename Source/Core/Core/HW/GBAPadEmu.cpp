@@ -82,7 +82,7 @@ GCPadStatus GBAPad::GetInput()
   // bits are already in GBA order: A, B, Select, Start, Right, Left, Up, Down, R, L.
   {
     u16 gba_keys = 0;
-    if (GBLink::Manager::Get().GetPadKeys(&gba_keys))
+    if (GBLink::Manager::Get().GetPadKeys(m_index, &gba_keys))
     {
       static constexpr u16 key_to_pad[10] = {PAD_BUTTON_A,     PAD_BUTTON_B,     PAD_TRIGGER_Z,
                                              PAD_BUTTON_START, PAD_BUTTON_RIGHT, PAD_BUTTON_LEFT,

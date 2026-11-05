@@ -78,6 +78,12 @@ std::vector<DeviceInfo> UsbLink::List(std::string* error)
     info.bcd = d.bcdDevice;
     info.bus = libusb_get_bus_number(list[i]);
     info.address = libusb_get_device_address(list[i]);
+    {
+      uint8_t ports[8];
+      const int np = libusb_get_port_numbers(list[i], ports, 8);
+      for (int p = 0; p < np; p++)
+        info.port_path += (p ? "." : "") + std::to_string(ports[p]);
+    }
     libusb_device_handle* h = nullptr;
     if (libusb_open(list[i], &h) == 0)
     {
