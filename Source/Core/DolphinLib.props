@@ -560,7 +560,7 @@
     <ClInclude Include="InputCommon\ControllerEmu\Setting\NumericSetting.h" />
     <ClInclude Include="InputCommon\ControllerEmu\StickGate.h" />
     <ClInclude Include="InputCommon\GBLink\GbaCartClient.h" />
-    <ClInclude Include="InputCommon\GBLink\Manager.h" />
+    <ClInclude Include="InputCommon\GBLink\GBLinkManager.h" />
     <ClInclude Include="InputCommon\GBLink\Multiboot.h" />
     <ClInclude Include="InputCommon\GBLink\Payloads.h" />
     <ClInclude Include="InputCommon\GBLink\Spi32.h" />
@@ -1307,7 +1307,7 @@
       <WarningLevel>TurnOffAllWarnings</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
     </ClCompile>
-    <ClCompile Include="InputCommon\GBLink\Manager.cpp">
+    <ClCompile Include="InputCommon\GBLink\GBLinkManager.cpp">
       <WarningLevel>TurnOffAllWarnings</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
     </ClCompile>

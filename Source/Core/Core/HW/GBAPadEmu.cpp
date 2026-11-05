@@ -11,7 +11,7 @@
 #include "InputCommon/GCPadStatus.h"
 
 #if defined(__LIBUSB__) && !defined(ANDROID)
-#include "InputCommon/GBLink/Manager.h"
+#include "InputCommon/GBLink/GBLinkManager.h"
 #endif
 
 static const u16 dpad_bitmasks[] = {PAD_BUTTON_UP, PAD_BUTTON_DOWN, PAD_BUTTON_LEFT,
