@@ -72,6 +72,13 @@ std::optional<Gen3Game> DetectRomGame(const std::string& rom_path, std::string* 
 bool ImportUserSave(const std::string& source_path, int device, std::string* status,
                     std::string* error);
 
+// Team-only import for a partial cartridge read (GB-Link): |partial_path| holds a Gen 3 image
+// in which only the footers and logical sections 0 and 1 are real. The trainer identity and
+// party are extracted, written into the bundled template for socket |device| (the same
+// construction a netplay host uses), saved to |built_path|, and imported with ImportUserSave.
+bool ImportTeamFromPartialSave(const std::string& partial_path, const std::string& built_path,
+                               int device, std::string* status, std::string* error);
+
 // Put the bundled team-editor template back into socket `device`'s save and
 // clear the per-port config key. The replaced file is kept as <save>.bak
 // (one-level undo, same as every verified write); <save>.preimport is left

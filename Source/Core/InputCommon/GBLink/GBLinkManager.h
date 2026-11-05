@@ -47,6 +47,8 @@ struct DumpResult
   std::vector<uint8_t> save;
   std::string title;
   std::string code;
+  // True when only the Gen 3 trainer/party sections were read (the rest of |save| is zeros).
+  bool partial = false;
 };
 
 class Manager
@@ -68,7 +70,10 @@ public:
 
   // Asynchronous, read-only cartridge save dump. |done| runs on the manager thread.
   // |progress| gets 0-100. Returns false if a dump is already queued.
-  bool RequestDump(std::function<void(DumpResult)> done, std::function<void(int)> progress = {});
+  // team_only: read just the Gen 3 trainer + party sections when the OrreLink agent is running
+  // (falls back to a full read for anything else).
+  bool RequestDump(std::function<void(DumpResult)> done, std::function<void(int)> progress = {},
+                   bool team_only = false);
   void CancelDump();
   bool IsDumpQueued() const;
 
@@ -82,6 +87,7 @@ private:
   {
     std::function<void(DumpResult)> done;
     std::function<void(int)> progress;
+    bool team_only = false;
   };
 
   void Run();
