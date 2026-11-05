@@ -1,93 +1,129 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>OrreLink Hub</title>
-<style>
-:root{--bg:#f6f4ef;--card:#fff;--ink:#1d1b20;--mute:#6a6672;--line:#e4e0d8;--accent:#5b3cc4;--accent-ink:#fff;--ok:#1f7a4d;--warn:#a05a00;--bad:#b3261e}
-@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#15131a;--card:#1f1c27;--ink:#efeaf7;--mute:#a49eb2;--line:#322d3f;--accent:#9b82ff;--accent-ink:#14101f;--ok:#58d49a;--warn:#f0b35a;--bad:#ff8a80}}
-*{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
-main{max-width:860px;margin:0 auto;padding:24px 16px 64px}
-h1{font-size:28px;margin:8px 0 4px}h2{font-size:19px;margin:0 0 4px}
-p{margin:0 0 12px}.mute{color:var(--mute)}.small{font-size:14px}
-.grid{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));margin:20px 0}
-.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px}
-.big{display:flex;flex-direction:column;gap:10px}
-.btn{appearance:none;border:1px solid var(--line);background:var(--card);color:var(--ink);padding:10px 16px;border-radius:10px;font:inherit;font-weight:600;cursor:pointer;text-decoration:none;display:inline-block;text-align:center}
-.btn.primary{background:var(--accent);color:var(--accent-ink);border-color:transparent}
-.btn:disabled{opacity:.5;cursor:default}
-.btn:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
-.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
-input,select{font:inherit;padding:9px 12px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--ink)}
-section{margin-top:28px}
-.rooms{display:grid;gap:8px}
-.room{display:flex;gap:10px;align-items:center;justify-content:space-between;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:10px 14px}
-.badge{display:inline-block;font-size:12px;font-weight:700;padding:2px 8px;border-radius:99px;background:var(--bg);border:1px solid var(--line);margin-right:6px}
-.drop{border:2px dashed var(--line);border-radius:14px;padding:22px;text-align:center;background:var(--card)}
-.drop.over{border-color:var(--accent)}
-.code{font:700 26px/1.2 ui-monospace,Consolas,monospace;letter-spacing:.12em}
-.ok{color:var(--ok)}.warn{color:var(--warn)}.bad{color:var(--bad)}
-[hidden]{display:none!important}
-</style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="color-scheme" content="dark light">
+    <title>OrreLink Hub</title>
+    <link rel="stylesheet" href="/style.css">
+    <link rel="stylesheet" href="/hub.css">
+    <link rel="icon" href="/favicon.ico">
 </head>
-<body>
-<main>
-  <h1>OrreLink Hub</h1>
-  <p class="mute">Battle other trainers in Pokémon XD with your real GBA. Pick one:</p>
+<body data-system="gba">
+    <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+<symbol id="i-cart" viewBox="0 0 24 24"><path d="M6 2.5h9.5l3 3V20a1.5 1.5 0 0 1-1.5 1.5H6A1.5 1.5 0 0 1 4.5 20V4A1.5 1.5 0 0 1 6 2.5Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><rect x="7.5" y="5.5" width="8" height="7" rx="1" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M8 18.5h1M11 18.5h1M14 18.5h1" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
+<symbol id="i-gba" viewBox="0 0 24 24"><path d="M2.5 9.5C2.5 7.6 3.8 6.5 5.5 6.5h13c1.7 0 3 1.1 3 3v5c0 1.9-1.3 3-3 3h-13c-1.7 0-3-1.1-3-3Z" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="7.5" y="8.5" width="9" height="7" rx="1" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M3.8 12h2.4M5 10.8v2.4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><circle cx="19" cy="11" r=".9" fill="currentColor"/><circle cx="18" cy="13" r=".9" fill="currentColor"/></symbol>
+<symbol id="i-usb" viewBox="0 0 24 24"><path d="M12 3v14M12 3l-2 3h4l-2-3ZM12 17a2 2 0 1 0 0 4 2 2 0 0 0 0-4ZM12 13l-4-2.5V8M12 15l4-2.5V10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><rect x="6.8" y="6.4" width="2.4" height="2" fill="currentColor"/><circle cx="16" cy="9" r="1.2" fill="currentColor"/></symbol>
+<symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+<symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 15.5V4.5m0 0L7.5 9M12 4.5 16.5 9M5 19.5h14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+<symbol id="i-warn" viewBox="0 0 24 24"><path d="M12 3.5 2.5 20h19L12 3.5Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M12 10v4.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="12" cy="17" r="1.1" fill="currentColor"/></symbol>
+    </svg>
 
-  <div class="grid">
-    <div class="card big"><div><h2>Random opponent</h2><p class="small mute">Joins a waiting player, or opens a room for you if nobody is waiting.</p></div>
-      <a id="go-search" class="btn primary" href="orrelink://search">Find a match</a></div>
-    <div class="card big"><div><h2>Host a room</h2><p class="small mute">Open a public room and wait. Friends can join from the list below.</p></div>
-      <div class="row"><select id="host-format" aria-label="Battle format"></select></div>
-      <a id="go-host" class="btn" href="orrelink://host">Host</a></div>
-    <div class="card big"><div><h2>Join with a code</h2><p class="small mute">Got a host code from a friend?</p></div>
-      <input id="join-code" placeholder="Host code" autocomplete="off" spellcheck="false">
-      <a id="go-join" class="btn" href="#">Join</a></div>
-  </div>
-  <p class="small mute" id="handler-note">These buttons open the OrreLink app. If nothing happens, open OrreLink and use its Host / Join / Search for Match buttons; they do the same thing.</p>
+    <header class="topbar">
+        <div class="topbar-inner">
+            <div class="brand">
+                <span class="brand-mark"><svg><use href="#i-gba"/></svg></span>
+                <span class="brand-text">
+                    <span class="brand-name">OrreLink Hub</span>
+                    <span class="brand-sub">GB-Link</span>
+                </span>
+            </div>
+            <div class="conn">
+                <span class="pill" data-state="off" id="roomsPill"><span class="dot"></span><span id="roomsPillText">Checking rooms…</span></span>
+            </div>
+        </div>
+    </header>
 
-  <section>
-    <div class="row" style="justify-content:space-between"><h2>Open rooms</h2><button class="btn" id="refresh">Refresh</button></div>
-    <p class="small mute" id="rooms-status">Loading…</p>
-    <div class="rooms" id="rooms"></div>
-  </section>
+    <main class="page">
+        <div class="intro">
+            <h1>Battle in Pokémon XD with your real GBA</h1>
+            <p>Find an opponent, host a room, or send your team to a friend. Everything here opens in the OrreLink app, which runs the battle.</p>
+        </div>
 
-  <section id="team-section">
-    <h2>Share your team</h2>
-    <p class="small mute">Drop your Emerald, FireRed, LeafGreen, Ruby or Sapphire save (the file OrreLink saved in <b>GBLink Dumps</b>, or any .sav). Only your Pokémon and trainer name are read, in this browser. Your save file is never uploaded.</p>
-    <div class="drop" id="drop"><p><b>Drop a .sav file here</b> or <label class="btn" for="file" style="margin-left:6px">choose a file</label></p><input id="file" type="file" accept=".sav,.srm,.sa1,.fla,*/*" hidden></div>
-    <p id="team-msg" class="small" role="status"></p>
-    <div id="team-result" class="card" hidden>
-      <p class="small mute" id="team-summary"></p>
-      <p>Team code <span class="code" id="team-code"></span></p>
-      <div class="row">
-        <button class="btn" id="copy-code">Copy code</button>
-        <button class="btn" id="copy-link">Copy link</button>
-        <a class="btn primary" id="open-team" href="#">Load in OrreLink</a>
-      </div>
-    </div>
+        <div class="actions">
+            <section class="card action">
+                <h2>Random opponent</h2>
+                <p>Joins a player who is waiting, or opens a room for you if nobody is.</p>
+                <a id="goSearch" class="btn btn-primary" href="orrelink://search">Find a match</a>
+            </section>
+            <section class="card action">
+                <h2>Host a room</h2>
+                <p>Open a public room and wait for someone to join from the list below.</p>
+                <select id="hostFormat" class="select" aria-label="Battle format"></select>
+                <a id="goHost" class="btn" href="orrelink://host">Host a room</a>
+            </section>
+            <section class="card action">
+                <h2>Join with a code</h2>
+                <p>Paste the host code a friend sent you.</p>
+                <input id="joinCode" class="input" placeholder="Host code" autocomplete="off" spellcheck="false">
+                <a id="goJoin" class="btn" href="#">Join</a>
+            </section>
+        </div>
 
-    <h2 style="margin-top:22px">Got a team code?</h2>
-    <div class="row"><input id="have-code" placeholder="8-letter team code" autocomplete="off" spellcheck="false" maxlength="12"><button class="btn" id="lookup">Look up</button></div>
-    <div id="loaded" class="card" hidden style="margin-top:12px">
-      <p id="loaded-summary"></p>
-      <div class="row"><a class="btn primary" id="loaded-open" href="#">Load in OrreLink</a><button class="btn" id="loaded-copy">Copy team text</button></div>
-    </div>
-  </section>
-</main>
+        <section class="card">
+            <div class="activity-head">
+                <h2 class="card-title">Open rooms</h2>
+                <button id="refreshBtn" class="btn btn-ghost btn-sm">Refresh</button>
+            </div>
+            <p id="roomsStatus" class="status-line">Loading…</p>
+            <div id="rooms" class="rooms"></div>
+        </section>
+
+        <section class="card" id="teamSection" style="margin-top:20px">
+            <h2 class="card-title">Your team</h2>
+            <label id="drop" class="drop" for="file">
+                <svg><use href="#i-upload"/></svg>
+                <span><b>Drop your save here</b>, or click to choose a file</span>
+                <span class="note" style="margin:0">Emerald, FireRed, LeafGreen, Ruby or Sapphire. The save file stays in your browser. Only your Pokémon and trainer name are shared.</span>
+            </label>
+            <input id="file" type="file" hidden>
+            <p id="teamMsg" class="status-line" role="status"></p>
+
+            <div id="shared" hidden>
+                <div class="team" id="sharedTeam"></div>
+                <div class="codebox"><span class="code" id="teamCode"></span></div>
+                <div class="btn-row">
+                    <button id="copyCode" class="btn">Copy code</button>
+                    <button id="copyLink" class="btn">Copy link</button>
+                    <a id="openTeam" class="btn btn-primary" href="#">Load in OrreLink</a>
+                </div>
+            </div>
+
+            <div class="divider"></div>
+            <h2 class="card-title">Got a team code?</h2>
+            <div class="btn-row">
+                <input id="haveCode" class="input" style="max-width:240px" placeholder="8-letter team code" autocomplete="off" spellcheck="false" maxlength="12">
+                <button id="lookupBtn" class="btn">Look up</button>
+            </div>
+            <div id="loaded" hidden>
+                <div class="team" id="loadedTeam"></div>
+                <div class="btn-row">
+                    <a id="loadedOpen" class="btn btn-primary" href="#">Load in OrreLink</a>
+                    <button id="loadedCopy" class="btn">Copy team text</button>
+                </div>
+                <p class="note">"Copy team text" is for OrreLink's team box if the Load button does nothing.</p>
+            </div>
+        </section>
+    </main>
+
+    <footer class="app-footer">
+        <span>OrreLink Hub</span>
+        <span class="sep">·</span>
+        <span>Needs the <a href="https://github.com/Mythical-clj/orrelink-gblink" target="_blank" rel="noopener">OrreLink app</a> and a <a href="https://github.com/GB-Link/GBLink-Firmware" target="_blank" rel="noopener">GB-Link</a></span>
+    </footer>
+
+<script src="/launcher-return.js"></script>
 <script type="module">
 import { extractTeam, bundleToCode, codeToBundle, describeBundle } from "/team.js";
 const $ = (id) => document.getElementById(id);
 const FORMATS = [["Orre","Orre Colosseum"],["OU","OU"],["Orre-U","Orre Unlimited"],["Orre-L","Orre Limited"],["Hoenn","Hoenn Stadium"],["Hoenn-U","Hoenn Unlimited"],["Hoenn-L","Hoenn Limited"],["DOU","Doubles OU"]];
-for (const [tag, label] of FORMATS) $("host-format").add(new Option(label, tag));
-$("host-format").onchange = () => { $("go-host").href = "orrelink://host?format=" + encodeURIComponent($("host-format").value); };
-$("host-format").onchange();
-$("join-code").oninput = () => { $("go-join").href = "orrelink://join?method=traversal&code=" + encodeURIComponent($("join-code").value.trim()); };
-$("go-join").onclick = (e) => { if (!$("join-code").value.trim()) { e.preventDefault(); $("join-code").focus(); } };
+for (const [tag, label] of FORMATS) $("hostFormat").add(new Option(label, tag));
+$("hostFormat").onchange = () => { $("goHost").href = "orrelink://host?format=" + encodeURIComponent($("hostFormat").value); };
+$("hostFormat").onchange();
+$("joinCode").oninput = () => { $("goJoin").href = "orrelink://join?method=traversal&code=" + encodeURIComponent($("joinCode").value.trim()); };
+$("goJoin").onclick = (e) => { if (!$("joinCode").value.trim()) { e.preventDefault(); $("joinCode").focus(); } };
 
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 async function api(path, opts) {
   const r = await fetch(path, opts);
   const j = await r.json().catch(() => ({}));
@@ -95,41 +131,53 @@ async function api(path, opts) {
   return j;
 }
 
+// ---- Gen 3 sprites: atlas cell number == the species id stored in the save
+let speciesData = null;
+const speciesReady = fetch("/gen3/species.json").then((r) => r.json()).then((d) => (speciesData = d)).catch(() => null);
+function teamHtml(members) {
+  return members.map((m) => {
+    const s = speciesData && speciesData.species[m.species];
+    const name = s ? s.name : "Pokémon #" + m.species;
+    const x = (m.species % 16) * 64, y = Math.floor(m.species / 16) * 64;
+    const sprite = s ? '<span class="sprite" role="img" aria-label="' + esc(name) + '" style="background-image:url(/gen3/icons.png);background-size:1024px auto;background-position:-' + x + "px -" + y + 'px"></span>' : '<span class="sprite"></span>';
+    const nick = m.nickname && m.nickname.toLowerCase() !== name.toLowerCase() ? esc(m.nickname) + " · " : "";
+    return '<div class="mon">' + sprite + '<div><div class="mon-name">' + esc(name) + '</div><div class="mon-sub">' + nick + "Lv " + m.level + (s && s.dex ? " · #" + s.dex : "") + "</div></div></div>";
+  }).join("");
+}
+
 // ---- rooms
-const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 async function loadRooms() {
-  $("rooms-status").textContent = "Loading…";
+  $("roomsStatus").textContent = "Loading…";
   try {
     const { rooms } = await api("/api/rooms");
     const open = rooms.filter((r) => !r.inGame && r.players < 2 && !r.password);
-    $("rooms-status").textContent = open.length ? open.length + " waiting for an opponent" : "No open rooms right now. Host one, or press Find a match to open one automatically.";
+    $("roomsStatus").textContent = open.length ? "" : "No one is waiting right now. Host a room, or press Find a match to open one automatically.";
+    $("roomsPillText").textContent = open.length + (open.length === 1 ? " room open" : " rooms open");
+    $("roomsPill").dataset.state = open.length ? "on" : "off";
     $("rooms").innerHTML = open.map((r) => {
       const link = "orrelink://join?method=" + encodeURIComponent(r.method) + "&code=" + encodeURIComponent(r.code) + "&port=" + r.port;
-      return '<div class="room"><div>' + (r.format ? '<span class="badge">' + esc(r.format) + "</span>" : "") + esc(r.title) +
-        '<div class="small mute">' + esc(r.region || "") + " · host code " + esc(r.code) + '</div></div><a class="btn primary" href="' + esc(link) + '">Join</a></div>';
+      return '<div class="room"><div class="room-main"><div class="room-title">' + (r.format ? '<span class="tag">' + esc(r.format) + "</span>" : "") + esc(r.title) +
+        '</div><div class="room-meta">' + esc(r.region || "") + ' · host code <code>' + esc(r.code) + '</code></div></div><a class="btn btn-primary btn-sm" href="' + esc(link) + '">Join</a></div>';
     }).join("");
-  } catch (e) { $("rooms-status").textContent = e.message; $("rooms").innerHTML = ""; }
+  } catch (e) { $("roomsStatus").textContent = e.message; $("rooms").innerHTML = ""; $("roomsPillText").textContent = "Rooms unavailable"; $("roomsPill").dataset.state = "off"; }
 }
-$("refresh").onclick = loadRooms; loadRooms(); setInterval(() => { if (!document.hidden) loadRooms(); }, 15000);
+$("refreshBtn").onclick = loadRooms; loadRooms(); setInterval(() => { if (!document.hidden) loadRooms(); }, 15000);
 
 // ---- share a team
-const msg = (t, cls) => { $("team-msg").textContent = t; $("team-msg").className = "small " + (cls || ""); };
-async function share(bundle, summary) {
-  const { code } = await api("/api/teams", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ team: bundleToCode(bundle) }) });
-  $("team-code").textContent = code;
-  $("team-summary").textContent = summary;
-  $("open-team").href = "orrelink://team/" + code;
-  $("team-result").hidden = false;
-  msg("Ready. Send the code or link to your opponent.", "ok");
-}
+const msg = (t, cls) => { $("teamMsg").textContent = t; $("teamMsg").className = "status-line " + (cls || ""); };
 async function onFile(file) {
-  $("team-result").hidden = true;
+  $("shared").hidden = true;
   if (!file) return;
   try {
-    msg("Reading…");
+    msg("Reading your save…");
     const r = extractTeam(new Uint8Array(await file.arrayBuffer()));
-    const games = { emerald: "Emerald", frlg: "FireRed / LeafGreen", rs: "Ruby / Sapphire" };
-    await share(r.bundle, r.trainer + " · " + r.count + " Pokémon · " + games[r.game]);
+    await speciesReady;
+    const { code } = await api("/api/teams", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ team: bundleToCode(r.bundle) }) });
+    $("sharedTeam").innerHTML = teamHtml(describeBundle(r.bundle).members);
+    $("teamCode").textContent = code;
+    $("openTeam").href = "orrelink://team/" + code;
+    $("shared").hidden = false;
+    msg(r.trainer + "'s team is ready. Send the code or link to your opponent.", "ok");
   } catch (e) { msg(e.message, "bad"); }
 }
 $("file").onchange = (e) => onFile(e.target.files[0]);
@@ -138,8 +186,8 @@ drop.ondragover = (e) => { e.preventDefault(); drop.classList.add("over"); };
 drop.ondragleave = () => drop.classList.remove("over");
 drop.ondrop = (e) => { e.preventDefault(); drop.classList.remove("over"); onFile(e.dataTransfer.files[0]); };
 const copy = async (t, btn) => { try { await navigator.clipboard.writeText(t); const o = btn.textContent; btn.textContent = "Copied"; setTimeout(() => (btn.textContent = o), 1200); } catch { prompt("Copy this:", t); } };
-$("copy-code").onclick = (e) => copy($("team-code").textContent, e.target);
-$("copy-link").onclick = (e) => copy(location.origin + "/t/" + $("team-code").textContent, e.target);
+$("copyCode").onclick = (e) => copy($("teamCode").textContent, e.target);
+$("copyLink").onclick = (e) => copy(location.origin + "/t/" + $("teamCode").textContent, e.target);
 
 // ---- load a shared team
 let loadedText = "";
@@ -147,18 +195,21 @@ async function lookup(code) {
   $("loaded").hidden = true;
   try {
     const j = await api("/api/teams/" + encodeURIComponent(code));
+    await speciesReady;
     const d = describeBundle(codeToBundle(j.team));
     loadedText = "SaveBundle:" + j.team;
-    $("loaded-summary").textContent = d.trainer + " · " + d.count + " Pokémon · code " + j.code;
-    $("loaded-open").href = "orrelink://team/" + j.code;
+    $("loadedTeam").innerHTML = teamHtml(d.members);
+    $("loadedOpen").href = "orrelink://team/" + j.code;
     $("loaded").hidden = false;
-    $("have-code").value = j.code;
-  } catch (e) { alert(e.message); }
+    $("haveCode").value = j.code;
+    msg(d.trainer + "'s team", "ok");
+  } catch (e) { msg(e.message, "bad"); }
 }
-$("lookup").onclick = () => lookup($("have-code").value);
-$("loaded-copy").onclick = (e) => copy(loadedText, e.target);
+$("lookupBtn").onclick = () => lookup($("haveCode").value);
+$("haveCode").onkeydown = (e) => { if (e.key === "Enter") lookup($("haveCode").value); };
+$("loadedCopy").onclick = (e) => copy(loadedText, e.target);
 const m = location.pathname.match(/^\/t\/([A-Za-z0-9]+)$/);
-if (m) { $("team-section").scrollIntoView(); lookup(m[1]); }
+if (m) { $("teamSection").scrollIntoView(); lookup(m[1]); }
 </script>
 </body>
 </html>

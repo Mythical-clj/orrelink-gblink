@@ -5,7 +5,7 @@ import { extname, join } from "node:path";
 import worker from "../src/worker.js";
 
 const kv = new Map();
-const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css" };
+const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".json": "application/json", ".png": "image/png", ".ico": "image/x-icon" };
 const pub = new URL("../public/", import.meta.url).pathname;
 const env = {
   TEAMS: { get: async (k) => kv.get(k) ?? null, put: async (k, v) => void kv.set(k, v) },
