@@ -447,7 +447,14 @@ void XDLauncherDialog::CreateMainLayout()
   gblink_layout->addWidget(m_gblink_status, 0, 0);
   gblink_layout->addWidget(m_gblink_pad_check, 1, 0);
   gblink_layout->addWidget(m_gblink_menu_check, 2, 0);
-  gblink_layout->addWidget(m_gblink_full_read_check, 3, 0);
+  m_gblink_mirror_check = new QCheckBox(tr("Show my GBA's battle screen on my real GBA"));
+  m_gblink_mirror_check->setChecked(true);
+  m_gblink_mirror_check->setToolTip(
+      tr("The emulated GBA's screen (your move menu in a link battle) is drawn on the real GBA. "
+         "It is sent in small pieces, so big scene changes take a few seconds to fill in. Turn "
+         "this off if buttons ever feel laggy."));
+  gblink_layout->addWidget(m_gblink_mirror_check, 3, 0);
+  gblink_layout->addWidget(m_gblink_full_read_check, 4, 0);
   gblink_layout->setColumnStretch(0, 1);
   gblink_box->setLayout(gblink_layout);
   layout->addWidget(gblink_box);
@@ -947,6 +954,13 @@ void XDLauncherDialog::ConnectWidgets()
     (void)on;
 #endif
   });
+  connect(m_gblink_mirror_check, &QCheckBox::toggled, this, [](bool on) {
+#ifdef ORRELINK_GBLINK
+    GBLink::Manager::Get().SetScreenMirror(on);
+#else
+    (void)on;
+#endif
+  });
   connect(m_gblink_menu_check, &QCheckBox::toggled, this, [](bool on) {
 #ifdef ORRELINK_GBLINK
     GBLink::Manager::Get().SetMenuNavigation(on);
@@ -1277,6 +1291,7 @@ void XDLauncherDialog::RefreshGbLinkStatus()
   m_gblink_status->setText(tr("GB-Link support is not available in this build."));
   m_gblink_pad_check->setEnabled(false);
   m_gblink_menu_check->setEnabled(false);
+  m_gblink_mirror_check->setEnabled(false);
   m_save_row_port2.gblink_button->setEnabled(false);
   m_save_row_port3.gblink_button->setEnabled(false);
 #endif

@@ -53,6 +53,14 @@ public:
   // wrong program, or a garbled word). keys: bit0 A, 1 B, 2 Select, 3 Start, 4 Right,
   // 5 Left, 6 Up, 7 Down, 8 R, 9 L.
   bool PollPad(uint16_t* keys, uint32_t* raw_reply = nullptr);
+  // Screen mirroring (OrreLink agent in controller mode). |tiles| holds n * kTileWords words
+  // (n = 1..16): per tile its index (0..599 screen tile, 600..607 palette chunk) followed by
+  // 16 words of data. One packet keeps reporting keys, so |keys| is refreshed when a key word
+  // came back. Returns true when the GBA acknowledged an intact packet.
+  static constexpr size_t kTileWords = 17;
+  static constexpr size_t kTilesPerPacket = 16;
+  static constexpr uint32_t kPalTileBase = 600;
+  bool SendTiles(const std::vector<uint32_t>& tiles, uint16_t* keys);
   void LeavePadMode();
 
   // OrreLink agent only: cartridge info plus random access to the save (CMD_RANGES).
