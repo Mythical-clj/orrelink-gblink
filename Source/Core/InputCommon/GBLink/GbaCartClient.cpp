@@ -13,7 +13,8 @@ namespace
 constexpr uint32_t M_MAGIC = 0x47420000, M_POLL = 0, M_GO = 0x4742600D, M_CONT = 0x4742C047,
                    M_FAIL = 0x4742BAD0, M_ABORT = 0x4742AB0B;
 constexpr uint32_t G_READY = 0x52454459, G_DONE = 0x444F4E45;
-constexpr uint32_t CMD_DUMP_SAVE = 2, CMD_INFO = 6, CMD_PAD = 8, CMD_RANGES = 9;
+constexpr uint32_t CMD_DUMP_SAVE = 2, CMD_INFO = 6, CMD_PAD = 8, CMD_RANGES = 9, CMD_IMAGE = 10;
+constexpr uint32_t G_OKOK = 0x4F4B4F4B;
 constexpr uint32_t M_RANGE_OFF = 0x47430000, M_RANGE_LEN = 0x47440000;
 constexpr uint32_t PAD_MAGIC = 0x4B500000;
 constexpr size_t SECTION_WORDS = 0x40;
@@ -159,6 +160,48 @@ std::vector<uint8_t> GbaCartClient::StreamIn(size_t total, const Progress& progr
 void GbaCartClient::EnterPadMode()
 {
   Command(CMD_PAD);
+}
+
+void GbaCartClient::EnterPadModeWithImage(const std::vector<uint8_t>& image)
+{
+  if (image.size() != kImageBytes)
+    throw GbaCartError("desync", "Bad picture size");
+  Command(CMD_IMAGE);
+  const uint32_t len = uint32_t(image.size());
+  Xfer(len);
+  if (Xfer(~len) != len)
+    throw GbaCartError("desync", "The GBA did not accept the picture");
+  const size_t sections = image.size() / 0x100;
+  std::vector<uint32_t> tx(SECTION_WORDS + 2);
+  int retries = 0;
+  for (size_t s = 0; s < sections;)
+  {
+    CheckCancel();
+    uint32_t xsum = 0;
+    for (size_t w = 0; w < SECTION_WORDS; w++)
+    {
+      const uint8_t* p = &image[s * 0x100 + w * 4];
+      const uint32_t v = uint32_t(p[0]) | (uint32_t(p[1]) << 8) | (uint32_t(p[2]) << 16) |
+                         (uint32_t(p[3]) << 24);
+      tx[w] = v;
+      xsum ^= v;
+    }
+    tx[SECTION_WORDS] = xsum;
+    tx[SECTION_WORDS + 1] = M_CONT;  // the GBA's answer (OKOK/FAIL) arrives in this exchange
+    const auto resp = XferBatch(tx);
+    if (resp[SECTION_WORDS + 1] == G_OKOK)
+    {
+      s++;
+      retries = 0;
+    }
+    else if (++retries > 50)
+    {
+      Xfer(M_ABORT);
+      throw GbaCartError("checksum", "A picture section failed 50 times");
+    }
+  }
+  // The GBA now switches its screen and starts the controller loop; give it a moment.
+  Sleep(60);
 }
 
 bool GbaCartClient::PollPad(uint16_t* keys, uint32_t* raw_reply)

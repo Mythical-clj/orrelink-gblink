@@ -389,7 +389,32 @@ void Manager::Run()
       {
         if (!pad_active)
         {
-          cart->EnterPadMode();
+          bool image_ok = false;
+          size_t image_size = 0;
+          const uint8_t* image = StandbyImage(&image_size);
+          if (image_size == GbaCartClient::kImageBytes)
+          {
+            try
+            {
+              const auto t0 = Clock::now();
+              cart->EnterPadModeWithImage(std::vector<uint8_t>(image, image + image_size));
+              image_ok = true;
+              LogLine(fmt::format(
+                  "picture sent in {} ms",
+                  std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t0).count()));
+            }
+            catch (const GbaCartError& e)
+            {
+              LogLine(std::string("could not send the picture: ") + e.what());
+              if (e.code == "link")
+                throw;
+              // The GBA may be waiting inside the picture transfer: let it time out.
+              if (!cart->Ping(3000))
+                throw;
+            }
+          }
+          if (!image_ok)
+            cart->EnterPadMode();
           pad_active = true;
           bad_polls = 0;
           SetStatus(State::ControllerActive, "Your GBA is acting as a controller");
