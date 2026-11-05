@@ -1,0 +1,547 @@
+From 71ecd29a98db620121708eb5b215b302fe06fa23 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 5 Nov 2026 08:42:22 -0600
+Subject: [PATCH] GB-Link: team-only cartridge read (Gen 3) and import
+
+Reads just the trainer info and party sections through the agent's ranged
+reads instead of the whole 128 KiB save. 'Read the whole save' checkbox
+restores the full dump. Falls back to the full read for other agents/games.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01764cASb9aVVk2m6JupRMj5
+---
+ .../DolphinQt/XDNetplay/XDLauncherDialog.cpp  |  19 +-
+ .../DolphinQt/XDNetplay/XDLauncherDialog.h    |   1 +
+ .../Core/InputCommon/GBLink/GBLinkManager.cpp |  53 +++++-
+ .../Core/InputCommon/GBLink/GBLinkManager.h   |   8 +-
+ .../Core/InputCommon/GBLink/GbaCartClient.cpp | 172 ++++++++++++++++--
+ .../Core/InputCommon/GBLink/GbaCartClient.h   |  15 ++
+ Source/Core/UICommon/XDNetplay/SaveImport.cpp |  58 ++++++
+ Source/Core/UICommon/XDNetplay/SaveImport.h   |   7 +
+ 8 files changed, 311 insertions(+), 22 deletions(-)
+
+diff --git a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
+index cdfbc86ce..7b3cedfd7 100644
+--- a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
++++ b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
+@@ -419,6 +419,11 @@ void XDLauncherDialog::CreateMainLayout()
+   auto* gblink_box = new QGroupBox(tr("Real GBA (GB-Link adapter)"));
+   auto* gblink_layout = new QGridLayout;
+   m_gblink_status = MakeNoteLabel(QString());
++  m_gblink_full_read_check = new QCheckBox(tr("Read the whole save (slower)"));
++  m_gblink_full_read_check->setChecked(false);
++  m_gblink_full_read_check->setToolTip(
++      tr("By default only your trainer info and team are read from the cartridge, which is much "
++         "faster. Tick this to read and import the entire save instead."));
+   m_gblink_pad_check = new QCheckBox(tr("Use my real GBA as the controller"));
+   m_gblink_pad_check->setChecked(true);
+   m_gblink_pad_check->setToolTip(
+@@ -428,6 +433,7 @@ void XDLauncherDialog::CreateMainLayout()
+          "release it."));
+   gblink_layout->addWidget(m_gblink_status, 0, 0);
+   gblink_layout->addWidget(m_gblink_pad_check, 1, 0);
++  gblink_layout->addWidget(m_gblink_full_read_check, 2, 0);
+   gblink_layout->setColumnStretch(0, 1);
+   gblink_box->setLayout(gblink_layout);
+   layout->addWidget(gblink_box);
+@@ -1286,7 +1292,15 @@ void XDLauncherDialog::OnImportFromGbLink(int device)
+           }
+           std::string status;
+           std::string error;
+-          if (!XDNetplay::SaveImport::ImportUserSave(backup_path, device, &status, &error))
++          const bool imported =
++              dump.partial ?
++                  XDNetplay::SaveImport::ImportTeamFromPartialSave(
++                      backup_path,
++                      File::GetUserPath(D_USER_IDX) + "GBLink Dumps/team-port" +
++                          std::to_string(device) + ".sav",
++                      device, &status, &error) :
++                  XDNetplay::SaveImport::ImportUserSave(backup_path, device, &status, &error);
++          if (!imported)
+           {
+             ModalMessageBox::warning(
+                 this, tr("OrreLink"),
+@@ -1313,7 +1327,8 @@ void XDLauncherDialog::OnImportFromGbLink(int device)
+             if (progress_ptr)
+               progress_ptr->setValue(percent);
+           });
+-      });
++      },
++      !m_gblink_full_read_check->isChecked());
+   if (!queued)
+   {
+     progress->close();
+diff --git a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.h b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.h
+index c0006cd6c..850bf4bb0 100644
+--- a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.h
++++ b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.h
+@@ -128,6 +128,7 @@ private:
+   ChecklistRow m_gba_input_row;
+ 
+   QLabel* m_gblink_status = nullptr;
++  QCheckBox* m_gblink_full_read_check = nullptr;
+   QCheckBox* m_gblink_pad_check = nullptr;
+   QTimer* m_gblink_timer = nullptr;
+ 
+diff --git a/Source/Core/InputCommon/GBLink/GBLinkManager.cpp b/Source/Core/InputCommon/GBLink/GBLinkManager.cpp
+index ecbc043b0..13de50560 100644
+--- a/Source/Core/InputCommon/GBLink/GBLinkManager.cpp
++++ b/Source/Core/InputCommon/GBLink/GBLinkManager.cpp
+@@ -3,6 +3,7 @@
+ 
+ #include "InputCommon/GBLink/GBLinkManager.h"
+ 
++#include <algorithm>
+ #include <chrono>
+ #include <utility>
+ 
+@@ -97,7 +98,8 @@ void Manager::SetControllerEnabled(bool enabled)
+   m_cv.notify_all();
+ }
+ 
+-bool Manager::RequestDump(std::function<void(DumpResult)> done, std::function<void(int)> progress)
++bool Manager::RequestDump(std::function<void(DumpResult)> done, std::function<void(int)> progress,
++                          bool team_only)
+ {
+   {
+     std::lock_guard lock(m_mutex);
+@@ -106,6 +108,7 @@ bool Manager::RequestDump(std::function<void(DumpResult)> done, std::function<vo
+     m_dump = std::make_unique<DumpRequest>();
+     m_dump->done = std::move(done);
+     m_dump->progress = std::move(progress);
++    m_dump->team_only = team_only;
+     m_cancel_dump = false;
+   }
+   m_cv.notify_all();
+@@ -270,9 +273,10 @@ void Manager::Run()
+           SetStatus(State::ReadingCart, "Reading your cartridge...");
+           CartInfo info;
+           const auto cart_deadline = Clock::now() + std::chrono::seconds(kDumpWaitForCartSeconds);
++          const bool try_team = req->team_only && agent_has_pad;
+           while (true)
+           {
+-            info = cart->ReadInfo();
++            info = try_team ? cart->BeginRanges() : cart->ReadInfo();
+             if (!info.no_cart)
+               break;
+             SetStatus(State::ReadingCart,
+@@ -285,14 +289,55 @@ void Manager::Run()
+           result.code = info.code;
+           SetStatus(State::ReadingCart, "Reading the save from " + info.title + "...");
+           int last_pct = -1;
+-          result.save = cart->DumpSave([&](size_t done, size_t total) {
++          const auto report = [&](size_t done, size_t total) {
+             const int pct = static_cast<int>(done * 100 / total);
+             if (pct != last_pct && req->progress)
+             {
+               last_pct = pct;
+               req->progress(pct);
+             }
+-          });
++          };
++          const std::string gc = info.code.substr(0, 3);
++          const bool gen3 = gc == "AXV" || gc == "AXP" || gc == "BPR" || gc == "BPG" || gc == "BPE";
++          bool have_save = false;
++          if (try_team)
++          {
++            if (info.save_size == 131072 && gen3)
++            {
++              try
++              {
++                result.save = cart->ReadGen3Team(info.save_size, report);
++                result.partial = true;
++                have_save = true;
++              }
++              catch (const GbaCartError& e)
++              {
++                if (e.code != "desync")
++                  throw;
++              }
++            }
++            if (!have_save && info.save_size != 0)
++            {
++              // Ranged agent but not a Gen 3 team read: fetch the whole save through ranges.
++              result.save.clear();
++              for (uint32_t off = 0; off < info.save_size; off += 0x4000)
++              {
++                const uint32_t len = std::min<uint32_t>(0x4000, info.save_size - off);
++                const auto part = cart->ReadRange(off, len);
++                result.save.insert(result.save.end(), part.begin(), part.end());
++                report(off + len, info.save_size);
++              }
++              result.partial = false;
++              have_save = true;
++            }
++            cart->EndRanges();
++            if (!have_save)
++              throw GbaCartError("no-save", "This cartridge has no save data.");
++          }
++          else
++          {
++            result.save = cart->DumpSave(report);
++          }
+           result.ok = true;
+         }
+         catch (const GbaCartError& e)
+diff --git a/Source/Core/InputCommon/GBLink/GBLinkManager.h b/Source/Core/InputCommon/GBLink/GBLinkManager.h
+index 3b0578572..09c8bd452 100644
+--- a/Source/Core/InputCommon/GBLink/GBLinkManager.h
++++ b/Source/Core/InputCommon/GBLink/GBLinkManager.h
+@@ -47,6 +47,8 @@ struct DumpResult
+   std::vector<uint8_t> save;
+   std::string title;
+   std::string code;
++  // True when only the Gen 3 trainer/party sections were read (the rest of |save| is zeros).
++  bool partial = false;
+ };
+ 
+ class Manager
+@@ -68,7 +70,10 @@ public:
+ 
+   // Asynchronous, read-only cartridge save dump. |done| runs on the manager thread.
+   // |progress| gets 0-100. Returns false if a dump is already queued.
+-  bool RequestDump(std::function<void(DumpResult)> done, std::function<void(int)> progress = {});
++  // team_only: read just the Gen 3 trainer + party sections when the OrreLink agent is running
++  // (falls back to a full read for anything else).
++  bool RequestDump(std::function<void(DumpResult)> done, std::function<void(int)> progress = {},
++                   bool team_only = false);
+   void CancelDump();
+   bool IsDumpQueued() const;
+ 
+@@ -82,6 +87,7 @@ private:
+   {
+     std::function<void(DumpResult)> done;
+     std::function<void(int)> progress;
++    bool team_only = false;
+   };
+ 
+   void Run();
+diff --git a/Source/Core/InputCommon/GBLink/GbaCartClient.cpp b/Source/Core/InputCommon/GBLink/GbaCartClient.cpp
+index 1890c9478..9dde60b2c 100644
+--- a/Source/Core/InputCommon/GBLink/GbaCartClient.cpp
++++ b/Source/Core/InputCommon/GBLink/GbaCartClient.cpp
+@@ -13,7 +13,8 @@ namespace
+ constexpr uint32_t M_MAGIC = 0x47420000, M_POLL = 0, M_GO = 0x4742600D, M_CONT = 0x4742C047,
+                    M_FAIL = 0x4742BAD0, M_ABORT = 0x4742AB0B;
+ constexpr uint32_t G_READY = 0x52454459, G_DONE = 0x444F4E45;
+-constexpr uint32_t CMD_DUMP_SAVE = 2, CMD_INFO = 6, CMD_PAD = 8;
++constexpr uint32_t CMD_DUMP_SAVE = 2, CMD_INFO = 6, CMD_PAD = 8, CMD_RANGES = 9;
++constexpr uint32_t M_RANGE_OFF = 0x47430000, M_RANGE_LEN = 0x47440000;
+ constexpr uint32_t PAD_MAGIC = 0x4B500000;
+ constexpr size_t SECTION_WORDS = 0x40;
+ 
+@@ -177,22 +178,11 @@ void GbaCartClient::LeavePadMode()
+   PollReady(3000);
+ }
+ 
+-CartInfo GbaCartClient::ReadInfo()
++void GbaCartClient::ParseHeader(CartInfo* info_out, const std::vector<uint32_t>& words)
+ {
+-  Command(CMD_INFO);
+-  WaitDone(60000);
+-  const auto sizes = ReadWords(2);
+-  CartInfo info;
+-  if (sizes[0] == 0xFFFFFFFF)
+-  {
+-    info.no_cart = true;
+-    return info;
+-  }
+-  info.game_size = sizes[0];
+-  info.save_size = sizes[1];
+-  const auto words = ReadWords(0xC0 / 4);
++  CartInfo& info = *info_out;
+   info.header.resize(0xC0);
+-  for (size_t w = 0; w < words.size(); w++)
++  for (size_t w = 0; w < words.size() && w < 0x30; w++)
+     std::memcpy(&info.header[w * 4], &words[w], 4);  // host is little-endian (x86/ARM64)
+   const auto ascii = [&](size_t from, size_t len) {
+     std::string s;
+@@ -208,6 +198,158 @@ CartInfo GbaCartClient::ReadInfo()
+   info.title = ascii(0xA0, 12);
+   info.code = ascii(0xAC, 4);
+   info.maker = ascii(0xB0, 2);
++}
++
++CartInfo GbaCartClient::BeginRanges()
++{
++  Command(CMD_RANGES);
++  WaitDone(60000);
++  const auto sizes = ReadWords(2);
++  CartInfo info;
++  if (sizes[0] == 0xFFFFFFFF)
++  {
++    info.no_cart = true;
++    return info;
++  }
++  info.game_size = sizes[0];
++  info.save_size = sizes[1];
++  ParseHeader(&info, ReadWords(0xC0 / 4));
++  if (info.save_size == 0)
++    return info;  // the GBA is back at its main loop
++  WaitDone(120000);  // the GBA copies the save into its RAM
++  return info;
++}
++
++std::vector<uint8_t> GbaCartClient::ReadRange(uint32_t offset, uint32_t length,
++                                              const Progress& progress)
++{
++  if (offset % 0x100 || length % 0x100 || length == 0 || offset / 0x100 > 0xFFFF ||
++      length / 0x100 > 0xFFFF)
++    throw GbaCartError("desync", "Bad save range");
++  const uint32_t w1 = M_RANGE_OFF | (offset / 0x100);
++  const uint32_t w2 = M_RANGE_LEN | (length / 0x100);
++  for (int attempt = 0; attempt < 8; attempt++)
++  {
++    CheckCancel();
++    PollReady(5000);
++    Xfer(w1);
++    const uint32_t echo1 = Xfer(w2);
++    const uint32_t echo2 = Xfer(M_POLL);
++    if (echo1 != uint32_t(~w1) || echo2 != uint32_t(~w2))
++      continue;
++    Xfer(M_GO);
++    return StreamIn(length, progress);
++  }
++  throw GbaCartError("desync", "The GBA did not accept the save range request");
++}
++
++void GbaCartClient::EndRanges()
++{
++  Xfer(M_ABORT);
++  PollReady(3000);
++}
++
++std::vector<uint8_t> GbaCartClient::ReadGen3Team(uint32_t save_size, const Progress& progress)
++{
++  constexpr uint32_t kSection = 4096, kPerBlock = 14, kBlock = kSection * kPerBlock;
++  constexpr uint32_t kFooter = 0xFF4, kFooterBlock = 0xF00;
++  constexpr uint32_t kSignature = 0x08012025;
++  if (save_size < 2 * kBlock)
++    throw GbaCartError("desync", "Save is too small to be a Gen 3 save");
++
++  const size_t total = 2 * kPerBlock * 0x100 + 2 * kSection;
++  size_t done_bytes = 0;
++  const auto sub_progress = [&](size_t base) {
++    return [&, base](size_t d, size_t) {
++      if (progress)
++        progress(base + d, total);
++    };
++  };
++
++  std::vector<uint8_t> image(save_size, 0);
++  // 1. Every section footer: id, checksum, signature, save index.
++  for (uint32_t blk = 0; blk < 2; blk++)
++  {
++    for (uint32_t sec = 0; sec < kPerBlock; sec++)
++    {
++      const uint32_t off = blk * kBlock + sec * kSection + kFooterBlock;
++      const auto data = ReadRange(off, 0x100);
++      std::memcpy(&image[off], data.data(), data.size());
++      done_bytes += 0x100;
++      if (progress)
++        progress(done_bytes, total);
++    }
++  }
++
++  const auto rd16 = [&](size_t o) { return uint32_t(image[o]) | (uint32_t(image[o + 1]) << 8); };
++  const auto rd32 = [&](size_t o) { return rd16(o) | (rd16(o + 2) << 16); };
++  struct BlockInfo
++  {
++    bool valid = true;
++    int64_t index = -1;
++    int pos_of[kPerBlock];
++  } info[2];
++  for (uint32_t blk = 0; blk < 2; blk++)
++  {
++    BlockInfo& bi = info[blk];
++    for (auto& p : bi.pos_of)
++      p = -1;
++    for (uint32_t sec = 0; sec < kPerBlock; sec++)
++    {
++      const size_t o = blk * kBlock + sec * kSection + kFooter;
++      const uint32_t sid = rd16(o);
++      const uint32_t sig = rd32(o + 4);
++      const uint32_t idx = rd32(o + 8);
++      if (sig != kSignature || sid >= kPerBlock || bi.pos_of[sid] != -1)
++      {
++        bi.valid = false;
++        continue;
++      }
++      bi.pos_of[sid] = int(sec);
++      if (bi.index == -1)
++        bi.index = idx;
++      else if (bi.index != int64_t(idx))
++        bi.valid = false;
++    }
++  }
++  int active = -1;
++  if (info[0].valid && info[1].valid)
++    active = info[1].index > info[0].index ? 1 : 0;
++  else if (info[1].valid)
++    active = 1;
++  else if (info[0].valid)
++    active = 0;
++  if (active < 0)
++    throw GbaCartError("desync", "No valid Gen 3 save slot found");
++
++  // 2. Logical sections 0 (trainer info) and 1 (team and items) of the active slot.
++  size_t base = done_bytes;
++  for (uint32_t id = 0; id < 2; id++)
++  {
++    const uint32_t off = uint32_t(active) * kBlock + uint32_t(info[active].pos_of[id]) * kSection;
++    const auto data = ReadRange(off, kSection, sub_progress(base));
++    std::memcpy(&image[off], data.data(), data.size());
++    base += kSection;
++  }
++  if (progress)
++    progress(total, total);
++  return image;
++}
++
++CartInfo GbaCartClient::ReadInfo()
++{
++  Command(CMD_INFO);
++  WaitDone(60000);
++  const auto sizes = ReadWords(2);
++  CartInfo info;
++  if (sizes[0] == 0xFFFFFFFF)
++  {
++    info.no_cart = true;
++    return info;
++  }
++  info.game_size = sizes[0];
++  info.save_size = sizes[1];
++  ParseHeader(&info, ReadWords(0xC0 / 4));
+   return info;
+ }
+ 
+diff --git a/Source/Core/InputCommon/GBLink/GbaCartClient.h b/Source/Core/InputCommon/GBLink/GbaCartClient.h
+index 425e75399..1a47aea57 100644
+--- a/Source/Core/InputCommon/GBLink/GbaCartClient.h
++++ b/Source/Core/InputCommon/GBLink/GbaCartClient.h
+@@ -49,6 +49,20 @@ public:
+   // 5 Left, 6 Up, 7 Down, 8 R, 9 L.
+   bool PollPad(uint16_t* keys, uint32_t* raw_reply = nullptr);
+   void LeavePadMode();
++
++  // OrreLink agent only: cartridge info plus random access to the save (CMD_RANGES).
++  // BeginRanges returns the same info as ReadInfo and, if the cartridge has a save,
++  // waits until the GBA has staged it in RAM. ReadRange then fetches 256-byte-aligned
++  // pieces. EndRanges returns the GBA to its idle state.
++  CartInfo BeginRanges();
++  std::vector<uint8_t> ReadRange(uint32_t offset, uint32_t length, const Progress& progress = {});
++  void EndRanges();
++  // Gen 3 (Ruby/Sapphire/FireRed/LeafGreen/Emerald) 128 KB flash saves: reads the 28
++  // section footers and, from the active save slot, the two sections holding the
++  // trainer info and the party (about 15 KB instead of 128 KB). Returns a save-sized image
++  // with those parts filled in and zeros elsewhere. Throws GbaCartError "desync" if no valid
++  // save slot is found (the caller can fall back to a full read).
++  std::vector<uint8_t> ReadGen3Team(uint32_t save_size, const Progress& progress = {});
+   CartInfo ReadInfo();
+   // Dumps the cartridge save (EEPROM 512B/8K, SRAM 32K, Flash 64K/128K).
+   std::vector<uint8_t> DumpSave(const Progress& progress = {});
+@@ -61,6 +75,7 @@ private:
+   void WaitDone(int timeout_ms);
+   std::vector<uint32_t> ReadWords(size_t n);
+   std::vector<uint8_t> StreamIn(size_t total_bytes, const Progress& progress);
++  static void ParseHeader(CartInfo* info, const std::vector<uint32_t>& words);
+   void CheckCancel();
+ 
+   UsbLink& m_usb;
+diff --git a/Source/Core/UICommon/XDNetplay/SaveImport.cpp b/Source/Core/UICommon/XDNetplay/SaveImport.cpp
+index 3dd69fbc6..89639e20f 100644
+--- a/Source/Core/UICommon/XDNetplay/SaveImport.cpp
++++ b/Source/Core/UICommon/XDNetplay/SaveImport.cpp
+@@ -9,6 +9,8 @@
+ 
+ #include "UICommon/XDNetplay/BattleCustomizer.h"
+ #include "UICommon/XDNetplay/DisposableSave.h"
++#include "UICommon/XDNetplay/Gen3Save.h"
++#include "UICommon/XDNetplay/PartyBundle.h"
+ 
+ #include <fmt/format.h>
+ 
+@@ -425,6 +427,62 @@ bool RestoreDefaultSave(int device, std::string* error)
+ #endif
+ }
+ 
++bool ImportTeamFromPartialSave(const std::string& partial_path, const std::string& built_path,
++                               int device, std::string* status, std::string* error)
++{
++  const auto fail = [error](std::string message) {
++    if (error)
++      *error = std::move(message);
++    return false;
++  };
++  if (device != 1 && device != 2)
++    return fail(fmt::format("no such GBA socket ({})", device));
++#ifndef HAS_LIBMGBA
++  (void)partial_path;
++  (void)built_path;
++  (void)status;
++  return fail("this build has no GBA support");
++#else
++  std::vector<u8> partial;
++  if (!ReadFileBytes(partial_path, &partial))
++    return fail("could not read " + partial_path);
++  std::string parse_error;
++  const auto save = EmeraldSave::Create(std::move(partial), &parse_error);
++  if (!save)
++    return fail("the cartridge save could not be read (" + parse_error + ")");
++
++  // Only the two sections that were actually read can be checked.
++  const Gen3Game game = EmeraldSave::DetectGame(*save);
++  for (const auto& bad : save->VerifyAllChecksums(game))
++  {
++    if (bad.block == save->GetActiveBlock() && (bad.section_id == 0 || bad.section_id == 1))
++      return fail("the team data read from the cartridge failed its checksum — try again");
++  }
++  const auto bundle = PartyBundle::Extract(*save, &parse_error);
++  if (!bundle)
++    return fail(parse_error);
++
++  const std::string template_path =
++      File::GetSysDirectory() +
++      (device == 1 ? "XDNetplay/EMERALD-2.sav" : "XDNetplay/EMERALD-3.sav");
++  std::vector<u8> template_bytes;
++  if (!ReadFileBytes(template_path, &template_bytes))
++    return fail("bundled template missing: " + template_path);
++  const auto built = PartyBundle::BuildSave(std::move(template_bytes), *bundle, &parse_error);
++  if (!built)
++    return fail(parse_error);
++
++  File::CreateFullPath(built_path);
++  {
++    File::IOFile out(built_path, "wb");
++    const auto& bytes = built->ToBytes();
++    if (!out || !out.WriteBytes(bytes.data(), bytes.size()))
++      return fail("could not write " + built_path);
++  }
++  return ImportUserSave(built_path, device, status, error);
++#endif
++}
++
+ bool HasImportBackup(int device)
+ {
+ #ifndef HAS_LIBMGBA
+diff --git a/Source/Core/UICommon/XDNetplay/SaveImport.h b/Source/Core/UICommon/XDNetplay/SaveImport.h
+index a28627920..df4328106 100644
+--- a/Source/Core/UICommon/XDNetplay/SaveImport.h
++++ b/Source/Core/UICommon/XDNetplay/SaveImport.h
+@@ -72,6 +72,13 @@ std::optional<Gen3Game> DetectRomGame(const std::string& rom_path, std::string*
+ bool ImportUserSave(const std::string& source_path, int device, std::string* status,
+                     std::string* error);
+ 
++// Team-only import for a partial cartridge read (GB-Link): |partial_path| holds a Gen 3 image
++// in which only the footers and logical sections 0 and 1 are real. The trainer identity and
++// party are extracted, written into the bundled template for socket |device| (the same
++// construction a netplay host uses), saved to |built_path|, and imported with ImportUserSave.
++bool ImportTeamFromPartialSave(const std::string& partial_path, const std::string& built_path,
++                               int device, std::string* status, std::string* error);
++
+ // Put the bundled team-editor template back into socket `device`'s save and
+ // clear the per-port config key. The replaced file is kept as <save>.bak
+ // (one-level undo, same as every verified write); <save>.preimport is left
+-- 
+2.43.0
+
