@@ -70,6 +70,8 @@ jobs:
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
   android:
+    # Disabled on the gblink-dev fork: needs signing secrets this fork does not have.
+    if: ${{ false }}
     needs: prepare
     runs-on: ubuntu-latest
     timeout-minutes: 150
