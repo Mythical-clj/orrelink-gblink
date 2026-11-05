@@ -76,6 +76,14 @@ bool ImportUserSave(const std::string& source_path, int device, std::string* sta
 // in which only the footers and logical sections 0 and 1 are real. The trainer identity and
 // party are extracted, written into the bundled template for socket |device| (the same
 // construction a netplay host uses), saved to |built_path|, and imported with ImportUserSave.
+// Team sharing. TeamTextFromSave reads socket |device|'s current save and returns its team as the
+// base64 text of a PartyBundle (what the OrreLink Hub stores under a team code). ImportTeamText is
+// the reverse: validate a team text (plain or "SaveBundle:"-prefixed), build the socket save from
+// the bundled template, write it to |built_path| and import it like any other save.
+bool TeamTextFromSave(int device, std::string* team_text, std::string* summary, std::string* error);
+bool ImportTeamText(const std::string& team_text, const std::string& built_path, int device,
+                    std::string* status, std::string* error);
+
 bool ImportTeamFromPartialSave(const std::string& partial_path, const std::string& built_path,
                                int device, std::string* status, std::string* error);
 

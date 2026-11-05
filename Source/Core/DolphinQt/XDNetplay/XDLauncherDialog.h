@@ -103,6 +103,9 @@ private:
   // Reads the save straight from a cartridge in a real GBA through a GB-Link adapter, keeps a
   // backup copy, then runs it through the same import as OnImportSave.
   void OnImportFromGbLink(int device);
+  void OnShareTeam();
+  void OnLoadTeamCode();
+  QString HubUrl();
   void RefreshGbLinkStatus();
 
   void OnBootSolo();
@@ -130,6 +133,8 @@ private:
   QLabel* m_gblink_status = nullptr;
   QCheckBox* m_gblink_full_read_check = nullptr;
   QCheckBox* m_gblink_menu_check = nullptr;
+  QPushButton* m_share_team_button = nullptr;
+  QPushButton* m_load_team_button = nullptr;
   QCheckBox* m_gblink_pad_check = nullptr;
   QTimer* m_gblink_timer = nullptr;
 
