@@ -336,9 +336,21 @@ u32 EmeraldSave::GetTrainerGender() const
   return ReadU8(m_raw.data(), m_section_offsets[0] + TRAINER_GENDER_OFFSET);
 }
 
+size_t EmeraldSave::PartyCountOffset() const
+{
+  return DetectGame(*this) == Gen3Game::FireRedLeafGreen ? FRLG_PARTY_COUNT_OFFSET :
+                                                           PARTY_COUNT_OFFSET;
+}
+
+size_t EmeraldSave::PartyDataOffset() const
+{
+  return DetectGame(*this) == Gen3Game::FireRedLeafGreen ? FRLG_PARTY_DATA_OFFSET :
+                                                           PARTY_DATA_OFFSET;
+}
+
 size_t EmeraldSave::GetPartyCount() const
 {
-  const u32 count = ReadU32(m_raw.data(), m_section_offsets[1] + PARTY_COUNT_OFFSET);
+  const u32 count = ReadU32(m_raw.data(), m_section_offsets[1] + PartyCountOffset());
   return std::min<size_t>(count, PARTY_MAX);
 }
 
@@ -349,7 +361,7 @@ std::optional<std::vector<Gen3Mon>> EmeraldSave::ReadParty(std::string* error) c
   const size_t count = GetPartyCount();
   for (size_t i = 0; i < count; i++)
   {
-    auto mon = Gen3Mon::FromBytes(m_raw.data() + off + PARTY_DATA_OFFSET + i * Gen3Mon::SIZE, error);
+    auto mon = Gen3Mon::FromBytes(m_raw.data() + off + PartyDataOffset() + i * Gen3Mon::SIZE, error);
     if (!mon)
       return std::nullopt;
     mons.push_back(std::move(*mon));
@@ -362,10 +374,10 @@ bool EmeraldSave::WriteParty(const std::vector<Gen3Mon>& mons)
   if (mons.size() > PARTY_MAX)
     return false;
   const size_t off = m_section_offsets[1];
-  WriteU32(m_raw.data(), off + PARTY_COUNT_OFFSET, static_cast<u32>(mons.size()));
+  WriteU32(m_raw.data(), off + PartyCountOffset(), static_cast<u32>(mons.size()));
   for (size_t i = 0; i < PARTY_MAX; i++)
   {
-    u8* slot = m_raw.data() + off + PARTY_DATA_OFFSET + i * Gen3Mon::SIZE;
+    u8* slot = m_raw.data() + off + PartyDataOffset() + i * Gen3Mon::SIZE;
     if (i < mons.size())
     {
       const std::array<u8, Gen3Mon::SIZE> bytes = mons[i].Encode();
