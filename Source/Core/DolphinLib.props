@@ -559,6 +559,12 @@
     <ClInclude Include="InputCommon\ControllerEmu\ControllerEmu.h" />
     <ClInclude Include="InputCommon\ControllerEmu\Setting\NumericSetting.h" />
     <ClInclude Include="InputCommon\ControllerEmu\StickGate.h" />
+    <ClInclude Include="InputCommon\GBLink\GbaCartClient.h" />
+    <ClInclude Include="InputCommon\GBLink\Manager.h" />
+    <ClInclude Include="InputCommon\GBLink\Multiboot.h" />
+    <ClInclude Include="InputCommon\GBLink\Payloads.h" />
+    <ClInclude Include="InputCommon\GBLink\Spi32.h" />
+    <ClInclude Include="InputCommon\GBLink\UsbLink.h" />
     <ClInclude Include="InputCommon\ControllerInterface\ControllerInterface.h" />
     <ClInclude Include="InputCommon\ControllerInterface\CoreDevice.h" />
     <ClInclude Include="InputCommon\ControllerInterface\InputBackend.h" />
@@ -1289,6 +1295,38 @@
     <ClCompile Include="InputCommon\ControllerEmu\ControllerEmu.cpp" />
     <ClCompile Include="InputCommon\ControllerEmu\Setting\NumericSetting.cpp" />
     <ClCompile Include="InputCommon\ControllerEmu\StickGate.cpp" />
+    <ClCompile Include="InputCommon\GBLink\AgentPayloadData.cpp">
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+      <TreatWarningAsError>false</TreatWarningAsError>
+    </ClCompile>
+    <ClCompile Include="InputCommon\GBLink\DumperPayloadData.cpp">
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+      <TreatWarningAsError>false</TreatWarningAsError>
+    </ClCompile>
+    <ClCompile Include="InputCommon\GBLink\GbaCartClient.cpp">
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+      <TreatWarningAsError>false</TreatWarningAsError>
+    </ClCompile>
+    <ClCompile Include="InputCommon\GBLink\Manager.cpp">
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+      <TreatWarningAsError>false</TreatWarningAsError>
+    </ClCompile>
+    <ClCompile Include="InputCommon\GBLink\Multiboot.cpp">
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+      <TreatWarningAsError>false</TreatWarningAsError>
+    </ClCompile>
+    <ClCompile Include="InputCommon\GBLink\Payloads.cpp">
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+      <TreatWarningAsError>false</TreatWarningAsError>
+    </ClCompile>
+    <ClCompile Include="InputCommon\GBLink\Spi32.cpp">
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+      <TreatWarningAsError>false</TreatWarningAsError>
+    </ClCompile>
+    <ClCompile Include="InputCommon\GBLink\UsbLink.cpp">
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+      <TreatWarningAsError>false</TreatWarningAsError>
+    </ClCompile>
     <ClCompile Include="InputCommon\ControllerInterface\ControllerInterface.cpp" />
     <ClCompile Include="InputCommon\ControllerInterface\CoreDevice.cpp" />
     <ClCompile Include="InputCommon\ControllerInterface\InputBackend.cpp" />
