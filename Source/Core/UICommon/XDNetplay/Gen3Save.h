@@ -65,6 +65,12 @@ public:
   static constexpr size_t PARTY_COUNT_OFFSET = 0x0234;  // u32
   static constexpr size_t PARTY_DATA_OFFSET = 0x0238;   // 6 * 100 bytes
   static constexpr size_t PARTY_MAX = 6;
+  // FireRed/LeafGreen keep the party near the top of section 1 instead
+  // (verified against real FireRed Rev 1 and LeafGreen saves).
+  static constexpr size_t FRLG_PARTY_COUNT_OFFSET = 0x0034;  // u32
+  static constexpr size_t FRLG_PARTY_DATA_OFFSET = 0x0038;   // 6 * 100 bytes
+  size_t PartyCountOffset() const;
+  size_t PartyDataOffset() const;
 
   // Section 0 (Trainer Info) offsets - Emerald.
   static constexpr size_t TRAINER_NAME_OFFSET = 0x0000;  // 7 bytes + 0xFF
