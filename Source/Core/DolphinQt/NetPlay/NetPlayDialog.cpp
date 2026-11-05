@@ -864,6 +864,7 @@ void NetPlayDialog::show(std::string nickname, bool use_traversal)
   m_use_traversal = use_traversal;
   m_buffer_size = 0;
   m_old_player_count = 0;
+  m_auto_team_role = -1;
 
   m_room_box->clear();
   m_chat_edit->clear();
@@ -1134,6 +1135,13 @@ void NetPlayDialog::UpdateGUI()
                             local_role == NetPlay::XdRole::Unknown;
     m_submit_team_button->setEnabled(may_submit);
     m_ready_button->setVisible(is_xd && may_submit);
+    // Joining a room sends the cartridge team on its own, once per role.
+    if (is_xd && may_submit && room_format.has_value() &&
+        m_auto_team_role != static_cast<int>(local_role))
+    {
+      m_auto_team_role = static_cast<int>(local_role);
+      AutoSubmitSaveTeam(m_auto_team_role);
+    }
     m_submit_team_button->setToolTip(
         may_submit                    ? JoinerSubmitTeamToolTip() :
         multi_seats || host_watching ? tr("Only seated players can submit a team.") :
@@ -1766,6 +1774,67 @@ void NetPlayDialog::OnSubmitTeam()
       }
     });
   }).detach();
+}
+
+bool NetPlayDialog::SendSaveTeam(bool announce_failures)
+{
+#ifdef HAS_LIBMGBA
+  const auto client = Settings::Instance().GetNetPlayClient();
+  if (!client)
+    return false;
+  const auto fail = [&](const QString& why) {
+    if (announce_failures)
+      DisplayMessage(why, "");
+    return false;
+  };
+
+  std::string rom = Config::Get(Config::MAIN_GBA_ROM_PATHS[1]);
+  if (rom.empty() || !File::Exists(rom))
+    rom = Config::Get(Config::MAIN_GBA_ROM_PATHS[2]);
+  if (rom.empty() || !File::Exists(rom))
+    return fail(tr("No Emerald ROM configured — run the launcher checklist first."));
+  const std::string save_path = HW::GBA::Core::GetSavePath(rom, 1);
+  if (!File::Exists(save_path))
+  {
+    return fail(tr("No team to send yet — read your cartridge from the launcher, or build a team "
+                   "in the Team Editor."));
+  }
+  std::string error;
+  const std::optional<XDNetplay::EmeraldSave> save = XDNetplay::LoadSaveFile(save_path, &error);
+  if (!save)
+    return fail(tr("Could not open your save: %1").arg(QString::fromStdString(error)));
+  const std::optional<std::vector<u8>> bundle = XDNetplay::PartyBundle::Extract(*save, &error);
+  if (!bundle)
+    return fail(tr("Could not use your save: %1").arg(QString::fromStdString(error)));
+
+  const int model_id = Config::Get(Config::MAIN_XD_SUBMIT_MODEL);
+  const std::optional<int> model =
+      model_id > 0 ? std::optional<int>(model_id) : std::nullopt;
+  client->SendTeamSubmission(XDNetplay::BuildBundleSubmissionPayload(*bundle, model, false));
+  return true;
+#else
+  Q_UNUSED(announce_failures);
+  return false;
+#endif
+}
+
+void NetPlayDialog::AutoSubmitSaveTeam(int role)
+{
+  Q_UNUSED(role);
+  // A player who last sent a typed Showdown team keeps doing that by hand; an
+  // untouched setup, or one that has read a cartridge, sends the save's team.
+  const bool has_typed_team =
+      !Config::Get(Config::MAIN_XD_SUBMIT_USE_SAVE) &&
+      XDNetplay::PartyBundle::Base64Decode(Config::Get(Config::MAIN_XD_SUBMIT_TEAM_B64))
+          .has_value();
+  if (has_typed_team)
+    return;
+  if (SendSaveTeam(true))
+  {
+    DisplayMessage(tr("Your save's team was sent to the host automatically. Use Submit Team to "
+                      "change it."),
+                   "");
+  }
 }
 
 void NetPlayDialog::OnSubmitHostTeam()

@@ -502,6 +502,10 @@ void XDLauncherDialog::CreateMainLayout()
   team_layout->addWidget(m_share_team_button, 1, 0);
   team_layout->addWidget(m_load_team_button, 1, 1);
   team_box->setLayout(team_layout);
+  // Rooms send the team themselves; these buttons need an optional team-code
+  // site, so they only appear once a hub URL has been set (QSettings
+  // "xdnetplay/huburl").
+  team_box->setVisible(!QSettings().value(QStringLiteral("xdnetplay/huburl")).toString().isEmpty());
   layout->addWidget(team_box);
 
   auto* battle_box = new QGroupBox(tr("Battle"));
@@ -1354,6 +1358,13 @@ void XDLauncherDialog::OnImportFromGbLink(int device)
           }
           else
           {
+            // A cartridge team is what the player means to bring to a room, so
+            // joining one sends it on its own (NetPlayDialog::AutoSubmitSaveTeam).
+            if (device == 1)
+            {
+              Config::SetBaseOrCurrent(Config::MAIN_XD_SUBMIT_USE_SAVE, true);
+              Config::Save();
+            }
             ModalMessageBox::information(
                 this, tr("OrreLink"),
                 tr("Read the save from %1.\n\n%2\n\nA backup copy of the raw cartridge save is "
