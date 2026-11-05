@@ -1,0 +1,37 @@
+From 285f0a713b05f0afe8f3ab7492bca1cb1d33c904 Mon Sep 17 00:00:00 2001
+From: t <t@t>
+Date: Thu, 5 Nov 2026 13:46:26 -0600
+Subject: [PATCH] XD launcher: wrap QStringBuilder expressions before
+ toStdString (MSVC build fix)
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01764cASb9aVVk2m6JupRMj5
+---
+ Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
+index 8084266fa..fef5ad6c3 100644
+--- a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
++++ b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
+@@ -1457,7 +1457,7 @@ void XDLauncherDialog::OnShareTeam()
+ 
+   m_share_team_button->setEnabled(false);
+   QPointer<XDLauncherDialog> self(this);
+-  const std::string url = (hub + QStringLiteral("/api/teams")).toStdString();
++  const std::string url = QString(hub + QStringLiteral("/api/teams")).toStdString();
+   const std::string body = "{\"team\":\"" + team_text + "\"}";
+   std::thread([self, url, body, summary] {
+     Common::HttpRequest request;
+@@ -1521,7 +1521,7 @@ void XDLauncherDialog::OnLoadTeamCode()
+ 
+   m_load_team_button->setEnabled(false);
+   QPointer<XDLauncherDialog> self(this);
+-  const std::string url = (hub + QStringLiteral("/api/teams/") + code).toStdString();
++  const std::string url = QString(hub + QStringLiteral("/api/teams/") + code).toStdString();
+   std::thread([self, url] {
+     Common::HttpRequest request;
+     request.FollowRedirects();
+-- 
+2.43.0
+
