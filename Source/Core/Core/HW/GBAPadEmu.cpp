@@ -10,6 +10,10 @@
 #include "InputCommon/ControllerEmu/ControlGroup/Buttons.h"
 #include "InputCommon/GCPadStatus.h"
 
+#if defined(__LIBUSB__) && !defined(ANDROID)
+#include "InputCommon/GBLink/Manager.h"
+#endif
+
 static const u16 dpad_bitmasks[] = {PAD_BUTTON_UP, PAD_BUTTON_DOWN, PAD_BUTTON_LEFT,
                                     PAD_BUTTON_RIGHT};
 
@@ -72,6 +76,26 @@ GCPadStatus GBAPad::GetInput()
 
   // DPad
   m_dpad->GetState(&pad.button, dpad_bitmasks, m_input_override_function);
+
+#if defined(__LIBUSB__) && !defined(ANDROID)
+  // A real GBA connected through a GB-Link adapter counts as this GBA's controller. Its key
+  // bits are already in GBA order: A, B, Select, Start, Right, Left, Up, Down, R, L.
+  {
+    u16 gba_keys = 0;
+    if (GBLink::Manager::Get().GetPadKeys(&gba_keys))
+    {
+      static constexpr u16 key_to_pad[10] = {PAD_BUTTON_A,     PAD_BUTTON_B,     PAD_TRIGGER_Z,
+                                             PAD_BUTTON_START, PAD_BUTTON_RIGHT, PAD_BUTTON_LEFT,
+                                             PAD_BUTTON_UP,    PAD_BUTTON_DOWN,  PAD_TRIGGER_R,
+                                             PAD_TRIGGER_L};
+      for (int i = 0; i < 10; i++)
+      {
+        if (gba_keys & (1 << i))
+          pad.button |= key_to_pad[i];
+      }
+    }
+  }
+#endif
 
   // Use X button as a reset signal
   if (m_reset_pending)
