@@ -1,0 +1,26 @@
+From cdeb8399531de59932cc1562eb3dd794a59b4a4e Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 5 Nov 2026 02:44:08 -0600
+Subject: [PATCH] XD launcher: capture progress_ptr in the GB-Link done
+ callback
+
+---
+ Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
+index 101d0b302..cdfbc86ce 100644
+--- a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
++++ b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
+@@ -1252,7 +1252,7 @@ void XDLauncherDialog::OnImportFromGbLink(int device)
+   connect(progress, &QProgressDialog::canceled, this, [] { GBLink::Manager::Get().CancelDump(); });
+ 
+   const bool queued = GBLink::Manager::Get().RequestDump(
+-      [this, device](GBLink::DumpResult result) {
++      [this, device, progress_ptr](GBLink::DumpResult result) {
+         // Runs on the GB-Link thread. Keep a copy of the raw cartridge dump no matter what the
+         // import decides: the cartridge's own save is the one thing we cannot recreate.
+         std::string backup_path;
+-- 
+2.43.0
+
