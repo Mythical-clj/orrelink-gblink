@@ -127,11 +127,22 @@ static int CmdPad(bool trace, int wait_s, int seconds)
     {
       std::ifstream f(g_image_path, std::ios::binary);
       std::vector<uint8_t> img((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
-      const auto ti = std::chrono::steady_clock::now();
-      cart.EnterPadModeWithImage(img);
-      Log("Picture sent in " +
-          std::to_string(int(std::chrono::duration<double>(std::chrono::steady_clock::now() - ti).count() * 1000)) +
-          " ms");
+      Log("Picture file '" + g_image_path + "': " + std::to_string(img.size()) + " bytes (expected " +
+          std::to_string(GbaCartClient::kImageBytes) + ")");
+      if (img.size() != GbaCartClient::kImageBytes)
+      {
+        Log("The picture file is missing or the wrong size. Run the probe from the folder that holds xd-standby.bin "
+            "(or give the full path). Continuing without the picture.");
+        cart.EnterPadMode();
+      }
+      else
+      {
+        const auto ti = std::chrono::steady_clock::now();
+        cart.EnterPadModeWithImage(img);
+        Log("Picture sent in " +
+            std::to_string(int(std::chrono::duration<double>(std::chrono::steady_clock::now() - ti).count() * 1000)) +
+            " ms");
+      }
     }
     else
       cart.EnterPadMode();
