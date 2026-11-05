@@ -107,5 +107,7 @@ private:
   std::atomic<bool> m_controller_enabled{true};
   std::atomic<bool> m_pad_live{false};
   std::atomic<uint16_t> m_pad_keys{0};
+  mutable std::atomic<uint64_t> m_query_count{0};
+  mutable std::atomic<uint64_t> m_query_live{0};
 };
 }  // namespace GBLink
