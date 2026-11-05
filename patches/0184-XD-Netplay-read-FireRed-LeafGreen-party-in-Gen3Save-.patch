@@ -1,0 +1,109 @@
+From 79c63aa799b3d06de7a3ae788954953e2d6039a6 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 5 Nov 2026 00:42:57 -0600
+Subject: [PATCH] XD Netplay: read FireRed/LeafGreen party in Gen3Save and
+ accept it in PartyBundle
+
+FRLG keeps party count/data at section-1 offsets 0x34/0x38 (verified against
+real FireRed Rev 1 and LeafGreen saves). EmeraldSave now picks offsets via
+DetectGame, so PartyBundle::Extract no longer refuses FRLG saves.
+---
+ Source/Core/UICommon/XDNetplay/Gen3Save.cpp   | 20 +++++++++++++++----
+ Source/Core/UICommon/XDNetplay/Gen3Save.h     |  6 ++++++
+ .../Core/UICommon/XDNetplay/PartyBundle.cpp   | 14 +++----------
+ 3 files changed, 25 insertions(+), 15 deletions(-)
+
+diff --git a/Source/Core/UICommon/XDNetplay/Gen3Save.cpp b/Source/Core/UICommon/XDNetplay/Gen3Save.cpp
+index 50c63e4a1..344a1e3b5 100644
+--- a/Source/Core/UICommon/XDNetplay/Gen3Save.cpp
++++ b/Source/Core/UICommon/XDNetplay/Gen3Save.cpp
+@@ -336,9 +336,21 @@ u32 EmeraldSave::GetTrainerGender() const
+   return ReadU8(m_raw.data(), m_section_offsets[0] + TRAINER_GENDER_OFFSET);
+ }
+ 
++size_t EmeraldSave::PartyCountOffset() const
++{
++  return DetectGame(*this) == Gen3Game::FireRedLeafGreen ? FRLG_PARTY_COUNT_OFFSET :
++                                                           PARTY_COUNT_OFFSET;
++}
++
++size_t EmeraldSave::PartyDataOffset() const
++{
++  return DetectGame(*this) == Gen3Game::FireRedLeafGreen ? FRLG_PARTY_DATA_OFFSET :
++                                                           PARTY_DATA_OFFSET;
++}
++
+ size_t EmeraldSave::GetPartyCount() const
+ {
+-  const u32 count = ReadU32(m_raw.data(), m_section_offsets[1] + PARTY_COUNT_OFFSET);
++  const u32 count = ReadU32(m_raw.data(), m_section_offsets[1] + PartyCountOffset());
+   return std::min<size_t>(count, PARTY_MAX);
+ }
+ 
+@@ -349,7 +361,7 @@ std::optional<std::vector<Gen3Mon>> EmeraldSave::ReadParty(std::string* error) c
+   const size_t count = GetPartyCount();
+   for (size_t i = 0; i < count; i++)
+   {
+-    auto mon = Gen3Mon::FromBytes(m_raw.data() + off + PARTY_DATA_OFFSET + i * Gen3Mon::SIZE, error);
++    auto mon = Gen3Mon::FromBytes(m_raw.data() + off + PartyDataOffset() + i * Gen3Mon::SIZE, error);
+     if (!mon)
+       return std::nullopt;
+     mons.push_back(std::move(*mon));
+@@ -362,10 +374,10 @@ bool EmeraldSave::WriteParty(const std::vector<Gen3Mon>& mons)
+   if (mons.size() > PARTY_MAX)
+     return false;
+   const size_t off = m_section_offsets[1];
+-  WriteU32(m_raw.data(), off + PARTY_COUNT_OFFSET, static_cast<u32>(mons.size()));
++  WriteU32(m_raw.data(), off + PartyCountOffset(), static_cast<u32>(mons.size()));
+   for (size_t i = 0; i < PARTY_MAX; i++)
+   {
+-    u8* slot = m_raw.data() + off + PARTY_DATA_OFFSET + i * Gen3Mon::SIZE;
++    u8* slot = m_raw.data() + off + PartyDataOffset() + i * Gen3Mon::SIZE;
+     if (i < mons.size())
+     {
+       const std::array<u8, Gen3Mon::SIZE> bytes = mons[i].Encode();
+diff --git a/Source/Core/UICommon/XDNetplay/Gen3Save.h b/Source/Core/UICommon/XDNetplay/Gen3Save.h
+index eb975f68b..55b9259cb 100644
+--- a/Source/Core/UICommon/XDNetplay/Gen3Save.h
++++ b/Source/Core/UICommon/XDNetplay/Gen3Save.h
+@@ -65,6 +65,12 @@ public:
+   static constexpr size_t PARTY_COUNT_OFFSET = 0x0234;  // u32
+   static constexpr size_t PARTY_DATA_OFFSET = 0x0238;   // 6 * 100 bytes
+   static constexpr size_t PARTY_MAX = 6;
++  // FireRed/LeafGreen keep the party near the top of section 1 instead
++  // (verified against real FireRed Rev 1 and LeafGreen saves).
++  static constexpr size_t FRLG_PARTY_COUNT_OFFSET = 0x0034;  // u32
++  static constexpr size_t FRLG_PARTY_DATA_OFFSET = 0x0038;   // 6 * 100 bytes
++  size_t PartyCountOffset() const;
++  size_t PartyDataOffset() const;
+ 
+   // Section 0 (Trainer Info) offsets - Emerald.
+   static constexpr size_t TRAINER_NAME_OFFSET = 0x0000;  // 7 bytes + 0xFF
+diff --git a/Source/Core/UICommon/XDNetplay/PartyBundle.cpp b/Source/Core/UICommon/XDNetplay/PartyBundle.cpp
+index 6b843e343..7d5294529 100644
+--- a/Source/Core/UICommon/XDNetplay/PartyBundle.cpp
++++ b/Source/Core/UICommon/XDNetplay/PartyBundle.cpp
+@@ -63,17 +63,9 @@ std::optional<std::vector<u8>> Extract(const EmeraldSave& save, std::string* err
+     return std::nullopt;
+   };
+ 
+-  // Emerald and Ruby/Sapphire share every offset this reads (section-0 trainer
+-  // block and section-1 party area, verified); FireRed/LeafGreen does not --
+-  // its party lives elsewhere in section 1, and because the section checksum
+-  // lengths coincide, Emerald-offset reads from an FRLG save return plausible
+-  // garbage instead of failing. Refuse loudly, same reasoning as the host-side
+-  // FRLG refusal in TeamInjector.
+-  if (EmeraldSave::DetectGame(save) == Gen3Game::FireRedLeafGreen)
+-  {
+-    return fail("this is a FireRed/LeafGreen save, which stores its party at different offsets -- "
+-                "only Emerald and Ruby/Sapphire saves can be submitted directly");
+-  }
++  // Emerald and Ruby/Sapphire share every offset this reads; FireRed/LeafGreen
++  // keeps its party at 0x34/0x38 in section 1, which EmeraldSave::ReadParty
++  // selects through DetectGame, so all five Gen 3 games are accepted here.
+ 
+   // ReadParty already reads the newest valid slot (EmeraldSave::Create picked
+   // the active block) and verifies each non-empty slot's substructure
+-- 
+2.43.0
+
