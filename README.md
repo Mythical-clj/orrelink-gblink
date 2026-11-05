@@ -34,6 +34,88 @@ sample teams and tournament results are in the
 - **When something goes wrong, the log knows.** One button shares it, and a
   crash leaves a report next to it.
 
+## This fork: play with a real GBA (GB-Link)
+
+This fork (`gblink-dev`) adds a **native, no-browser** path for a real Game Boy
+Advance and a stock [GB-Link](https://gblink.io) USB adapter. Plug the adapter
+into the PC, connect the GBA with a link cable, and the GBA plays XD while the
+emulated Emerald does the battle engine. Everything happens inside OrreLink:
+there is no web page, no extra firmware on the adapter and no gamepad driver.
+Windows is the tested platform (libusb is built into the Windows build).
+
+### What was added
+
+| Feature | What it does |
+|---|---|
+| **Real GBA as the controller** | Power the GBA on holding START + SELECT (cartridge in or out). OrreLink sends it a small program (the *agent*, about 20 KB, over the multiboot link) and the GBA's buttons then drive the emulated GBA. Hold L + R + Start + Select for 2 seconds to release it. |
+| **Read my cartridge** | Launcher buttons read the cartridge save through the agent, read-only. By default only the trainer info and party sections of a Gen 3 save are read (Emerald, FireRed, LeafGreen, and Ruby/Sapphire as far as the format allows). That is a few seconds instead of a full dump. "Read the whole save" is a checkbox. The result becomes your GBA port 2 save, with a raw backup copy kept in `User/GBLink Dumps`. |
+| **Team goes with you into a room** | After reading a cartridge, joining an XD room sends that team to the host on its own (a party bundle, the same data "Use my save" in Submit Team sends). Submit Team still works if you want a Showdown paste instead. A typed team you sent earlier is left alone until you read a cartridge again. |
+| **Menu navigation (optional)** | A checkbox lets the real GBA also act as the GameCube pad on port 1, so XD's own menus can be driven with it. It is off by default. |
+| **Standby picture** | When the GBA becomes a controller it shows an XD picture instead of the multiboot screen. |
+| **Screen mirroring** | The emulated GBA's screen (your move menu in a link battle) is drawn on the real GBA. A fixed 252-colour palette maps every pixel the same way every time, and only the 8x8 tiles that changed are sent, packed between the controller polls, so the buttons keep reporting while the picture updates. A whole new scene fills in over a few seconds, a menu cursor in a blink. A checkbox turns it off. |
+| **Diagnostics** | `User/Logs/GBLink.log` records the adapter, the controller poll rate, key changes and mirroring statistics. |
+
+### How to use it
+
+1. Download the latest Windows build from this fork's
+   [Actions](https://github.com/Mythical-clj/orrelink-gblink/actions) page
+   (`Build XD Netplay`, artifact for Windows) and unzip it.
+2. Plug in the GB-Link, connect the GBA, and power the GBA on holding START + SELECT.
+3. Open OrreLink. In the launcher, the *Real GBA* box shows the status. "Use my
+   real GBA as the controller" is on by default.
+4. To bring your real team: press the cartridge-read button for GBA port 2, with your
+   cartridge in the GBA (leave it on).
+5. Search for a match, host, or join a code. When you join, your team is sent on its own.
+   Your GBA is the controller for the battle.
+
+Every machine needs the same OrreLink build, as before. Only the player
+using a real GBA needs the adapter.
+
+### Under the hood
+
+- **Adapter protocol:** USB VID `0x2FE3`, command endpoints `0x01/0x81`, data
+  endpoints `0x02/0x82`, 32-bit SPI words batched up to 14 per USB write
+  (`InputCommon/GBLink`).
+- **Agent** (`gba-agent/`, C for devkitARM, built by CI and embedded into the
+  Dolphin build): a command loop over the link. Commands include info, save
+  dump, ranged save reads (used for the team-only read), the controller loop,
+  and a staged picture. Data moves in 256-byte sections with an XOR checksum
+  and retries.
+- **Controller loop:** the agent replies to every exchange with the current
+  keys (`0x4B50....`). The PC polls about 3,000 times a second.
+- **Mirroring:** the agent also accepts tile packets (`0x4754nnnn`, up to 16
+  tiles of 17 words and a checksum) and answers with an acknowledgement
+  (`0x4B41000x`). `ScreenMirror` quantizes, diffs and packs; the GBA core's
+  per-frame callback feeds it the frame of the emulated GBA that is local to
+  this machine.
+- **Teams:** `PartyBundle` (617 bytes) is the slimmed-down save data netplay
+  already carries; the team-only read produces exactly that.
+- **Other tools:** `gblink-native/` builds `gblink-probe`, a command-line tool
+  for testing the adapter without Dolphin (`list`, `info`, `dump`, `pad`,
+  `team`, and `pad --mirror-test`). `orrelink-hub/` is an unfinished, optional
+  team-code web service; nothing in the app depends on it (its buttons stay
+  hidden until a hub URL is set).
+
+### Status and limits
+
+- Tested on hardware: multiboot of the agent, the controller (about 3,000
+  polls per second, all ten keys), the team-only cartridge read, and the
+  standby picture.
+- Written but **not yet tested on hardware**: screen mirroring, automatic team
+  send when joining a room, and a real-GBA controller across two machines.
+- Only the USA XD disc is supported, as in upstream OrreLink.
+- Not supported: other adapters, GBA-less spectator mirroring, macOS and Linux
+  builds of the GB-Link code (the code is portable, the builds are not set up).
+
+### Changes by patch
+
+The fork is a set of patches (`patches/0001`-`0195`) applied on a pinned
+Dolphin base. The GB-Link work is patches **0184-0195**:
+adapter and agent plumbing, controller, cartridge read, team-only read,
+diagnostics log, menu navigation, standby picture, team-code buttons
+(hidden by default), automatic team send on joining, and screen mirroring.
+`git log` has one commit per step.
+
 ## What you need
 
 | | |
