@@ -128,6 +128,7 @@ private:
   ChecklistRow m_gba_input_row;
 
   QLabel* m_gblink_status = nullptr;
+  QCheckBox* m_gblink_full_read_check = nullptr;
   QCheckBox* m_gblink_pad_check = nullptr;
   QTimer* m_gblink_timer = nullptr;
 
