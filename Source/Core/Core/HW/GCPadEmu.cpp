@@ -17,6 +17,10 @@
 #include "InputCommon/ControllerEmu/StickGate.h"
 #include "InputCommon/GCPadStatus.h"
 
+#if defined(__LIBUSB__) && !defined(ANDROID)
+#include "InputCommon/GBLink/GBLinkManager.h"
+#endif
+
 static const u16 button_bitmasks[] = {
     PAD_BUTTON_A,
     PAD_BUTTON_B,
@@ -141,8 +145,33 @@ GCPadStatus GCPad::GetInput() const
   const auto lock = GetStateLock();
   GCPadStatus pad = {};
 
+#if defined(__LIBUSB__) && !defined(ANDROID)
+  // Optional: the real GBA (through GB-Link) can navigate menus as port 1's pad. Its key bits
+  // are in GBA order: A, B, Select, Start, Right, Left, Up, Down, R, L.
+  u16 gba_buttons = 0;
+  if (m_index == 0 && GBLink::Manager::Get().IsMenuNavigation())
+  {
+    u16 gba_keys = 0;
+    if (GBLink::Manager::Get().GetPadKeys(&gba_keys))
+    {
+      static constexpr u16 key_to_pad[10] = {PAD_BUTTON_A,     PAD_BUTTON_B,     PAD_TRIGGER_Z,
+                                             PAD_BUTTON_START, PAD_BUTTON_RIGHT, PAD_BUTTON_LEFT,
+                                             PAD_BUTTON_UP,    PAD_BUTTON_DOWN,  PAD_TRIGGER_R,
+                                             PAD_TRIGGER_L};
+      for (int i = 0; i < 10; i++)
+      {
+        if (gba_keys & (1 << i))
+          gba_buttons |= key_to_pad[i];
+      }
+    }
+  }
+  const bool gba_present = m_index == 0 && GBLink::Manager::Get().IsMenuNavigation();
+#else
+  const bool gba_present = false;
+#endif
+
   if (!(m_always_connected_setting.GetValue() || IsDefaultDeviceConnected() ||
-        m_input_override_function))
+        m_input_override_function || gba_present))
   {
     pad.isConnected = false;
     return pad;
@@ -177,6 +206,21 @@ GCPadStatus GCPad::GetInput() const
   m_triggers->GetState(&pad.button, trigger_bitmasks, triggers.data(), m_input_override_function);
   pad.triggerLeft = MapFloat<u8>(triggers[0], 0);
   pad.triggerRight = MapFloat<u8>(triggers[1], 0);
+
+#if defined(__LIBUSB__) && !defined(ANDROID)
+  if (gba_buttons)
+  {
+    pad.button |= gba_buttons;
+    if (gba_buttons & PAD_BUTTON_A)
+      pad.analogA = 0xFF;
+    if (gba_buttons & PAD_BUTTON_B)
+      pad.analogB = 0xFF;
+    if (gba_buttons & PAD_TRIGGER_L)
+      pad.triggerLeft = 0xFF;
+    if (gba_buttons & PAD_TRIGGER_R)
+      pad.triggerRight = 0xFF;
+  }
+#endif
 
   return pad;
 }
