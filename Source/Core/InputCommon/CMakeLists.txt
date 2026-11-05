@@ -153,6 +153,7 @@ if(NOT ANDROID)
     GBLink/DumperPayloadData.cpp
     GBLink/GbaCartClient.cpp
     GBLink/GbaCartClient.h
+    GBLink/StandbyImageData.cpp
     GBLink/GBLinkManager.cpp
     GBLink/GBLinkManager.h
     GBLink/Multiboot.cpp
