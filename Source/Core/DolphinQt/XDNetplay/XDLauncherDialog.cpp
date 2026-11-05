@@ -1252,7 +1252,7 @@ void XDLauncherDialog::OnImportFromGbLink(int device)
   connect(progress, &QProgressDialog::canceled, this, [] { GBLink::Manager::Get().CancelDump(); });
 
   const bool queued = GBLink::Manager::Get().RequestDump(
-      [this, device](GBLink::DumpResult result) {
+      [this, device, progress_ptr](GBLink::DumpResult result) {
         // Runs on the GB-Link thread. Keep a copy of the raw cartridge dump no matter what the
         // import decides: the cartridge's own save is the one thing we cannot recreate.
         std::string backup_path;
