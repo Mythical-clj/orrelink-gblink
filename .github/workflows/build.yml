@@ -203,9 +203,27 @@ jobs:
           name: dolphin-xd-netplay-apk
           path: out/*.apk
 
+  gba-agent:
+    # The OrreLink GBA program (Cart Doctor dumper + controller mode), built with devkitARM.
+    runs-on: ubuntu-latest
+    container: devkitpro/devkitarm:latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install libgba
+        run: dkp-pacman -Sy --noconfirm libgba || dkp-pacman -S --noconfirm gba-dev
+      - name: Build
+        working-directory: gba-agent
+        run: |
+          export LIBGBA=$DEVKITPRO/libgba
+          make
+      - uses: actions/upload-artifact@v4
+        with:
+          name: orrelink-agent-gba
+          path: gba-agent/orrelink-agent_mb.gba
+
   windows:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_windows }}
-    needs: prepare
+    needs: [prepare, gba-agent]
     runs-on: windows-latest
     timeout-minutes: 180
     steps:
@@ -215,6 +233,22 @@ jobs:
           submodules: recursive
           fetch-depth: 0
       - uses: microsoft/setup-msbuild@v2
+      - uses: actions/download-artifact@v4
+        with:
+          name: orrelink-agent-gba
+          path: agent
+      - name: Embed the GBA agent
+        # Replaces the placeholder AgentPayloadData.cpp with the freshly built program bytes.
+        shell: python
+        run: |
+          data = open('agent/orrelink-agent_mb.gba', 'rb').read()
+          rows = ['    ' + ','.join('0x%02x' % b for b in data[i:i + 16]) + ',' for i in range(0, len(data), 16)]
+          src = ('#include <cstddef>\n\nnamespace GBLink::Data\n{\n'
+                 'extern const unsigned char kAgentPayload[];\nextern const size_t kAgentPayloadSize;\n'
+                 'const unsigned char kAgentPayload[] = {\n' + '\n'.join(rows) + '\n};\n'
+                 'const size_t kAgentPayloadSize = sizeof(kAgentPayload);\n}  // namespace GBLink::Data\n')
+          open('Source/Core/InputCommon/GBLink/AgentPayloadData.cpp', 'w').write(src)
+          print('embedded', len(data), 'bytes')
       - name: Build
         run: msbuild Source/dolphin-emu.sln /m /v:m /p:Configuration=Release /p:Platform=x64
       - name: Collect symbols

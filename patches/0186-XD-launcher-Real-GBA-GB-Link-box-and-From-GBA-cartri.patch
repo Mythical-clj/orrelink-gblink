@@ -1,0 +1,294 @@
+From fd185362f4e7f818c9883dcb1c9c0225c09b6c47 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 5 Nov 2026 02:00:20 -0600
+Subject: [PATCH 186/186] XD launcher: Real GBA (GB-Link) box and 'From GBA
+ cartridge...' save import
+
+Shows GB-Link/GBA status, a controller on/off toggle, and a per-port button that reads the
+save from a cartridge in a real GBA (read-only, backup copy kept) and imports it through
+the existing SaveImport path.
+---
+ .../DolphinQt/XDNetplay/XDLauncherDialog.cpp  | 173 +++++++++++++++++-
+ .../DolphinQt/XDNetplay/XDLauncherDialog.h    |  10 +
+ 2 files changed, 181 insertions(+), 2 deletions(-)
+
+diff --git a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
+index ad0720fee..b7aa3a81b 100644
+--- a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
++++ b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
+@@ -32,11 +32,13 @@
+ #include <QListWidget>
+ #include <QPlainTextEdit>
+ #include <QPointer>
++#include <QProgressDialog>
+ #include <QPushButton>
+ #include <QScreen>
+ #include <QScrollArea>
+ #include <QScrollBar>
+ #include <QStandardPaths>
++#include <QTimer>
+ #include <QShowEvent>
+ #include <QSignalBlocker>
+ #include <QVBoxLayout>
+@@ -81,6 +83,12 @@
+ #include "UICommon/XDNetplay/Gen3Save.h"
+ #include "UICommon/XDNetplay/SaveImport.h"
+ 
++#if defined(__LIBUSB__) && !defined(ANDROID)
++#define ORRELINK_GBLINK 1
++#include <QDateTime>
++#include "InputCommon/GBLink/Manager.h"
++#endif
++
+ namespace
+ {
+ // A word-wrapped explanatory line that can never be squashed below its text.
+@@ -406,6 +414,24 @@ void XDLauncherDialog::CreateMainLayout()
+   // the room -- joiners submit their team instead), and a hosting session
+   // never syncs the import itself, only the rebuilt party-and-identity save
+   // DisposableSave swaps in for the room's duration.
++  // GB-Link: a real GBA plugged into this PC. Plays as the controller (no setup beyond
++  // powering the GBA on with START+SELECT held) and can hand over its cartridge save.
++  auto* gblink_box = new QGroupBox(tr("Real GBA (GB-Link adapter)"));
++  auto* gblink_layout = new QGridLayout;
++  m_gblink_status = MakeNoteLabel(QString());
++  m_gblink_pad_check = new QCheckBox(tr("Use my real GBA as the controller"));
++  m_gblink_pad_check->setChecked(true);
++  m_gblink_pad_check->setToolTip(
++      tr("Plug in the GB-Link, connect your GBA with the link cable, and power the GBA on while "
++         "holding START + SELECT (the cartridge can stay in). OrreLink sends the GBA a small "
++         "program and its buttons then play XD. Hold L + R + Start + Select for 2 seconds to "
++         "release it."));
++  gblink_layout->addWidget(m_gblink_status, 0, 0);
++  gblink_layout->addWidget(m_gblink_pad_check, 1, 0);
++  gblink_layout->setColumnStretch(0, 1);
++  gblink_box->setLayout(gblink_layout);
++  layout->addWidget(gblink_box);
++
+   auto* saves_box = new QGroupBox(tr("Save Files"));
+   auto* saves_layout = new QGridLayout;
+   auto* saves_caption = MakeNoteLabel(
+@@ -413,11 +439,15 @@ void XDLauncherDialog::CreateMainLayout()
+          "share the file: the session runs on a rebuilt save carrying only your party and "
+          "trainer identity, and your own save returns when the room closes. When you join "
+          "someone else's room, use Submit Team instead."));
+-  saves_layout->addWidget(saves_caption, 0, 0, 1, 4);
++  saves_layout->addWidget(saves_caption, 0, 0, 1, 5);
+   int save_row = 1;
+   const auto add_save_row = [&](SaveSlotRow* target, const QString& label) {
+     target->state = MakeNoteLabel(QString());
+     target->import_button = new NonDefaultQPushButton(tr("Import my save..."));
++    target->gblink_button = new NonDefaultQPushButton(tr("From GBA cartridge..."));
++    target->gblink_button->setToolTip(
++        tr("Reads the save from the cartridge in your real GBA through the GB-Link adapter "
++           "(read-only; a backup copy is kept), then imports it like Import my save."));
+     target->restore_button = new NonDefaultQPushButton(tr("Restore default"));
+     target->restore_button->setToolTip(
+         tr("Puts the bundled team-editor save back. The replaced save is kept next to it as a "
+@@ -425,7 +455,8 @@ void XDLauncherDialog::CreateMainLayout()
+     saves_layout->addWidget(new QLabel(label), save_row, 0);
+     saves_layout->addWidget(target->state, save_row, 1);
+     saves_layout->addWidget(target->import_button, save_row, 2);
+-    saves_layout->addWidget(target->restore_button, save_row, 3);
++    saves_layout->addWidget(target->gblink_button, save_row, 3);
++    saves_layout->addWidget(target->restore_button, save_row, 4);
+     save_row++;
+   };
+   add_save_row(&m_save_row_port2, tr("Your save (GBA port 2):"));
+@@ -860,6 +891,21 @@ void XDLauncherDialog::ConnectWidgets()
+           [this] { OnImportSave(1); });
+   connect(m_save_row_port3.import_button, &QPushButton::clicked, this,
+           [this] { OnImportSave(2); });
++  connect(m_save_row_port2.gblink_button, &QPushButton::clicked, this,
++          [this] { OnImportFromGbLink(1); });
++  connect(m_save_row_port3.gblink_button, &QPushButton::clicked, this,
++          [this] { OnImportFromGbLink(2); });
++  connect(m_gblink_pad_check, &QCheckBox::toggled, this, [](bool on) {
++#ifdef ORRELINK_GBLINK
++    GBLink::Manager::Get().SetControllerEnabled(on);
++#else
++    (void)on;
++#endif
++  });
++  m_gblink_timer = new QTimer(this);
++  connect(m_gblink_timer, &QTimer::timeout, this, &XDLauncherDialog::RefreshGbLinkStatus);
++  m_gblink_timer->start(500);
++  RefreshGbLinkStatus();
+   connect(m_save_row_port2.restore_button, &QPushButton::clicked, this,
+           [this] { OnRestoreDefaultSave(1); });
+   connect(m_save_row_port3.restore_button, &QPushButton::clicked, this,
+@@ -1158,6 +1204,129 @@ void XDLauncherDialog::OnImportSave(int device)
+   RefreshChecklist();
+ }
+ 
++void XDLauncherDialog::RefreshGbLinkStatus()
++{
++#ifdef ORRELINK_GBLINK
++  const GBLink::Status status = GBLink::Manager::Get().GetStatus();
++  m_gblink_status->setText(QString::fromStdString(status.text));
++  // The pad checkbox mirrors the manager (the player can also release the GBA with the
++  // L+R+Start+Select combo, which turns the controller off inside the manager).
++  const bool enabled = GBLink::Manager::Get().IsControllerEnabled();
++  if (m_gblink_pad_check->isChecked() != enabled)
++  {
++    const QSignalBlocker blocker(m_gblink_pad_check);
++    m_gblink_pad_check->setChecked(enabled);
++  }
++  const bool busy = GBLink::Manager::Get().IsDumpQueued() ||
++                    status.state == GBLink::State::ReadingCart;
++  m_save_row_port2.gblink_button->setEnabled(!busy);
++  m_save_row_port3.gblink_button->setEnabled(!busy);
++#else
++  m_gblink_status->setText(tr("GB-Link support is not available in this build."));
++  m_gblink_pad_check->setEnabled(false);
++  m_save_row_port2.gblink_button->setEnabled(false);
++  m_save_row_port3.gblink_button->setEnabled(false);
++#endif
++}
++
++void XDLauncherDialog::OnImportFromGbLink(int device)
++{
++#ifdef ORRELINK_GBLINK
++  auto* progress = new QProgressDialog(tr("Starting..."), tr("Cancel"), 0, 100, this);
++  progress->setWindowTitle(tr("Reading your GBA cartridge"));
++  progress->setWindowModality(Qt::WindowModal);
++  progress->setMinimumDuration(0);
++  progress->setAutoClose(false);
++  progress->setAutoReset(false);
++  progress->setAttribute(Qt::WA_DeleteOnClose);
++  progress->setValue(0);
++
++  QPointer<QProgressDialog> progress_ptr(progress);
++  auto* label_timer = new QTimer(progress);
++  connect(label_timer, &QTimer::timeout, progress, [progress_ptr] {
++    if (progress_ptr)
++      progress_ptr->setLabelText(
++          QString::fromStdString(GBLink::Manager::Get().GetStatus().text));
++  });
++  label_timer->start(300);
++  connect(progress, &QProgressDialog::canceled, this, [] { GBLink::Manager::Get().CancelDump(); });
++
++  const bool queued = GBLink::Manager::Get().RequestDump(
++      [this, device](GBLink::DumpResult result) {
++        // Runs on the GB-Link thread. Keep a copy of the raw cartridge dump no matter what the
++        // import decides: the cartridge's own save is the one thing we cannot recreate.
++        std::string backup_path;
++        if (result.ok)
++        {
++          const std::string stamp =
++              QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd-HHmmss")).toStdString();
++          backup_path = File::GetUserPath(D_USER_IDX) + "GBLink Dumps/" +
++                        (result.code.empty() ? std::string("GBA") : result.code) + "-" + stamp +
++                        ".sav";
++          File::CreateFullPath(backup_path);
++          File::IOFile file(backup_path, "wb");
++          if (!file.WriteBytes(result.save.data(), result.save.size()))
++          {
++            result.ok = false;
++            result.error = "Could not write the backup copy to " + backup_path;
++          }
++        }
++        QueueOnObject(this, [this, device, dump = std::move(result), backup_path,
++                             progress_ptr]() mutable {
++          if (progress_ptr)
++            progress_ptr->close();
++          if (!dump.ok)
++          {
++            if (dump.error != "Cancelled")
++            {
++              ModalMessageBox::warning(this, tr("OrreLink"),
++                                       QString::fromStdString(dump.error));
++            }
++            return;
++          }
++          std::string status;
++          std::string error;
++          if (!XDNetplay::SaveImport::ImportUserSave(backup_path, device, &status, &error))
++          {
++            ModalMessageBox::warning(
++                this, tr("OrreLink"),
++                tr("The save was read from the cartridge (%1) but could not be imported:\n\n%2\n\n"
++                   "A copy is kept at %3")
++                    .arg(QString::fromStdString(dump.title), QString::fromStdString(error),
++                         QString::fromStdString(backup_path)));
++          }
++          else
++          {
++            ModalMessageBox::information(
++                this, tr("OrreLink"),
++                tr("Read the save from %1.\n\n%2\n\nA backup copy of the raw cartridge save is "
++                   "kept at %3")
++                    .arg(QString::fromStdString(dump.title), QString::fromStdString(status),
++                         QString::fromStdString(backup_path)));
++          }
++          RefreshChecklist();
++        });
++      },
++      [progress_ptr](int percent) {
++        if (progress_ptr)
++          QueueOnObject(progress_ptr.data(), [progress_ptr, percent] {
++            if (progress_ptr)
++              progress_ptr->setValue(percent);
++          });
++      });
++  if (!queued)
++  {
++    progress->close();
++    ModalMessageBox::warning(this, tr("OrreLink"),
++                             tr("GB-Link is busy or not running. Try again in a moment."));
++  }
++#else
++  (void)device;
++  ModalMessageBox::warning(this, tr("OrreLink"),
++                           tr("GB-Link support is not available in this build."));
++#endif
++}
++
+ void XDLauncherDialog::OnRestoreDefaultSave(int device)
+ {
+   std::string error;
+diff --git a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.h b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.h
+index e2242e7c7..c0006cd6c 100644
+--- a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.h
++++ b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.h
+@@ -17,6 +17,7 @@ class QLabel;
+ class QLineEdit;
+ class QPushButton;
+ class QSpinBox;
++class QTimer;
+ class QShowEvent;
+ class TeamEditorDialog;
+ 
+@@ -70,6 +71,7 @@ private:
+     QLabel* state = nullptr;
+     QPushButton* import_button = nullptr;
+     QPushButton* restore_button = nullptr;
++    QPushButton* gblink_button = nullptr;
+   };
+ 
+   void CreateMainLayout();
+@@ -98,6 +100,10 @@ private:
+   // (the guest slot).
+   void OnImportSave(int device);
+   void OnRestoreDefaultSave(int device);
++  // Reads the save straight from a cartridge in a real GBA through a GB-Link adapter, keeps a
++  // backup copy, then runs it through the same import as OnImportSave.
++  void OnImportFromGbLink(int device);
++  void RefreshGbLinkStatus();
+ 
+   void OnBootSolo();
+   void OnHost();
+@@ -121,6 +127,10 @@ private:
+   ChecklistRow m_vs_save_row;
+   ChecklistRow m_gba_input_row;
+ 
++  QLabel* m_gblink_status = nullptr;
++  QCheckBox* m_gblink_pad_check = nullptr;
++  QTimer* m_gblink_timer = nullptr;
++
+   SaveSlotRow m_save_row_port2;
+   SaveSlotRow m_save_row_port3;
+ 
+-- 
+2.43.0
+
