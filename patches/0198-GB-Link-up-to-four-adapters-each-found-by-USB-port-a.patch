@@ -1,4 +1,4 @@
-From a145eb3c918fb3c1aebaae434e12de387472dbfa Mon Sep 17 00:00:00 2001
+From 9d2fb8e361d46c3073a706206d4426a5c3732cbb Mon Sep 17 00:00:00 2001
 From: t <t@t>
 Date: Thu, 5 Nov 2026 14:19:05 -0600
 Subject: [PATCH] GB-Link: up to four adapters, each found by USB port and
@@ -58,7 +58,7 @@ index aff13b0ed..61497a159 100644
        static constexpr u16 key_to_pad[10] = {PAD_BUTTON_A,     PAD_BUTTON_B,     PAD_TRIGGER_Z,
                                               PAD_BUTTON_START, PAD_BUTTON_RIGHT, PAD_BUTTON_LEFT,
 diff --git a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
-index fef5ad6c3..b91975da7 100644
+index fef5ad6c3..3ba2287c5 100644
 --- a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
 +++ b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
 @@ -16,6 +16,7 @@
@@ -78,26 +78,26 @@ index fef5ad6c3..b91975da7 100644
 +  adapters_layout->setContentsMargins(0, 0, 0, 0);
 +  for (int i = 0; i < 4; i++)
 +  {
-+    auto& row = m_gblink_rows[i];
-+    row.widget = new QWidget;
-+    auto* row_layout = new QHBoxLayout(row.widget);
++    auto& ad = m_gblink_rows[i];
++    ad.widget = new QWidget;
++    auto* row_layout = new QHBoxLayout(ad.widget);
 +    row_layout->setContentsMargins(0, 0, 0, 0);
-+    row.label = new QLabel(tr("GB-Link %1 plays:").arg(i + 1));
-+    row.port_combo = new QComboBox;
-+    row.port_combo->addItem(tr("Automatic"), -2);
-+    row.port_combo->addItem(tr("Every GBA port"), 0);
++    ad.label = new QLabel(tr("GB-Link %1 plays:").arg(i + 1));
++    ad.port_combo = new QComboBox;
++    ad.port_combo->addItem(tr("Automatic"), -2);
++    ad.port_combo->addItem(tr("Every GBA port"), 0);
 +    for (int port = 1; port <= 4; port++)
-+      row.port_combo->addItem(tr("GBA port %1").arg(port), port);
-+    row.port_combo->addItem(tr("Not used"), -1);
-+    row.port_combo->setToolTip(
++      ad.port_combo->addItem(tr("GBA port %1").arg(port), port);
++    ad.port_combo->addItem(tr("Not used"), -1);
++    ad.port_combo->setToolTip(
 +        tr("Which emulated GBA this adapter and its GBA control. Automatic: a single adapter "
 +           "plays every GBA port; with several, the first plays port 1, the second port 2, and so "
 +           "on. Pick a port yourself if a battle puts a local player on a different one."));
-+    row_layout->addWidget(row.label);
-+    row_layout->addWidget(row.port_combo, 1);
-+    row.widget->setVisible(false);
-+    adapters_layout->addWidget(row.widget);
-+    connect(row.port_combo, &QComboBox::activated, this, [this, i](int) {
++    row_layout->addWidget(ad.label);
++    row_layout->addWidget(ad.port_combo, 1);
++    ad.widget->setVisible(false);
++    adapters_layout->addWidget(ad.widget);
++    connect(ad.port_combo, &QComboBox::activated, this, [this, i](int) {
 +#ifdef ORRELINK_GBLINK
 +      const int setting = m_gblink_rows[i].port_combo->currentData().toInt();
 +      GBLink::Manager::Get().SetPortSetting(m_gblink_rows[i].key, setting);
