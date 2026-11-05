@@ -212,7 +212,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install libgba
-        run: dkp-pacman -Sy --noconfirm libgba || dkp-pacman -S --noconfirm gba-dev
+        run: test -d $DEVKITPRO/libgba || dkp-pacman -S --noconfirm --needed libgba
       - name: Build
         working-directory: gba-agent
         run: |
