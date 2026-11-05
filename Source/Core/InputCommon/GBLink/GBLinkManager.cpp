@@ -7,6 +7,11 @@
 #include <chrono>
 #include <utility>
 
+#include <fmt/format.h>
+
+#include "Common/FileUtil.h"
+#include "Common/IOFile.h"
+#include "Common/CommonPaths.h"
 #include "Common/Logging/Log.h"
 #include "InputCommon/GBLink/GbaCartClient.h"
 #include "InputCommon/GBLink/Multiboot.h"
@@ -27,6 +32,25 @@ constexpr int kPadBadPollsBeforeCheck = 20;
 void LogLine(const std::string& s)
 {
   INFO_LOG_FMT(CONTROLLERINTERFACE, "GBLink: {}", s);
+  // Also keep a plain file next to Dolphin's other logs; it works with logging switched off.
+  static std::mutex file_mutex;
+  std::lock_guard lock(file_mutex);
+  static File::IOFile file;
+  if (!file.IsOpen())
+  {
+    const std::string path = File::GetUserPath(D_LOGS_IDX) + "GBLink.log";
+    File::CreateFullPath(path);
+    file.Open(path, "ab");
+  }
+  if (file.IsOpen())
+  {
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now().time_since_epoch())
+                        .count();
+    const std::string line = fmt::format("[{}.{:03}] {}\n", ms / 1000 % 100000, ms % 1000, s);
+    file.WriteBytes(line.data(), line.size());
+    file.Flush();
+  }
 }
 }  // namespace
 
@@ -86,8 +110,10 @@ void Manager::SetStatus(State state, std::string text)
 
 bool Manager::GetPadKeys(uint16_t* keys) const
 {
+  m_query_count++;
   if (!m_pad_live)
     return false;
+  m_query_live++;
   *keys = m_pad_keys;
   return true;
 }
@@ -140,6 +166,8 @@ void Manager::Run()
   std::unique_ptr<GbaCartClient> cart;
   bool agent_loaded = false;
   bool agent_has_pad = false;
+  uint64_t stat_polls = 0;
+  auto stat_time = Clock::now();
   bool pad_active = false;
   int bad_polls = 0;
 
@@ -367,14 +395,19 @@ void Manager::Run()
           SetStatus(State::ControllerActive, "Your GBA is acting as a controller");
         }
         uint16_t keys = 0;
-        if (cart->PollPad(&keys))
+        uint32_t raw = 0;
+        stat_polls++;
+        if (cart->PollPad(&keys, &raw))
         {
           bad_polls = 0;
+          if (keys != m_pad_keys)
+            LogLine(fmt::format("GBA keys 0x{:03x}", keys));
           m_pad_keys = keys;
           m_pad_live = true;
         }
         else if (++bad_polls >= kPadBadPollsBeforeCheck)
         {
+          LogLine(fmt::format("{} bad pad polls in a row, last reply 0x{:08x}", bad_polls, raw));
           m_pad_live = false;
           m_pad_keys = 0;
           pad_active = false;
@@ -389,6 +422,15 @@ void Manager::Run()
             agent_loaded = false;
             SetStatus(State::WaitingForGba, "Lost the GBA. Power it on holding START + SELECT.");
           }
+        }
+        if (Clock::now() - stat_time >= std::chrono::seconds(5))
+        {
+          LogLine(fmt::format("controller: {} polls, Dolphin asked for keys {} times ({} live), "
+                              "live={} keys=0x{:03x}",
+                              stat_polls, m_query_count.exchange(0), m_query_live.exchange(0),
+                              m_pad_live.load(), m_pad_keys.load()));
+          stat_polls = 0;
+          stat_time = Clock::now();
         }
         if (usb.Lost())
           drop_adapter();
