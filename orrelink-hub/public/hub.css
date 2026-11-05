@@ -23,11 +23,9 @@
 .drop svg { width: 28px; height: 28px; color: var(--faint); }
 .status-line { min-height: 1.4em; margin-top: 12px; font-size: 0.9rem; color: var(--muted); }
 .status-line.ok { color: var(--ok); } .status-line.bad { color: var(--danger); }
-.team { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; margin: 14px 0; }
-.mon { display: flex; align-items: center; gap: 10px; padding: 8px 10px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm); }
-.sprite { width: 64px; height: 64px; flex: none; image-rendering: pixelated; background-repeat: no-repeat; }
-.mon-name { font-weight: 650; font-size: 0.92rem; line-height: 1.2; }
-.mon-sub { font-size: 0.78rem; color: var(--muted); }
+.team { list-style: none; display: flex; flex-direction: column; gap: 6px; margin: 14px 0; padding: 0; }
+.team li { display: flex; align-items: center; gap: 12px; padding: 9px 14px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm); font-weight: 600; }
+.team li::before { content: attr(data-n); width: 22px; height: 22px; display: grid; place-items: center; font-size: 0.78rem; font-weight: 700; color: var(--muted); background: var(--surface-3); border-radius: 50%; }
 .codebox { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 6px 0 14px; }
 .code { font: 700 1.7rem/1 var(--mono); letter-spacing: 0.14em; padding: 8px 14px; border-radius: var(--radius-sm); background: var(--surface-3); border: 1px solid var(--border-strong); }
 .divider { height: 1px; background: var(--border); margin: 22px 0; }

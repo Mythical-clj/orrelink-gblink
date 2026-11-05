@@ -119,14 +119,11 @@ export function codeToBundle(code) {
 const ORDERS = ["GAEM","GAME","GEAM","GEMA","GMAE","GMEA","AGEM","AGME","AEGM","AEMG","AMGE","AMEG",
                 "EGAM","EGMA","EAGM","EAMG","EMGA","EMAG","MGAE","MGEA","MAGE","MAEG","MEGA","MEAG"];
 
-// Species id (Gen 3 internal numbering), level and nickname of one 100-byte party Pokémon.
+// Species id (Gen 3 internal numbering) of one 100-byte party Pokémon.
 export function monInfo(mon) {
   const pid = u32(mon, 0), key = (pid ^ u32(mon, 4)) >>> 0;
   const growth = ORDERS[pid % 24].indexOf("G");
-  const species = (u16(mon, 0x20 + growth * 12) ^ (key & 0xffff)) & 0xffff;
-  let nick = "";
-  for (let i = 0; i < 10 && mon[8 + i] !== 0xff; i++) nick += decodeChar(mon[8 + i]);
-  return { species, level: mon[0x54], nickname: nick };
+  return { species: (u16(mon, 0x20 + growth * 12) ^ (key & 0xffff)) & 0xffff };
 }
 
 export function describeBundle(bundle) {

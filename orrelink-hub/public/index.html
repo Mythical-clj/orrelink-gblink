@@ -80,7 +80,7 @@
             <p id="teamMsg" class="status-line" role="status"></p>
 
             <div id="shared" hidden>
-                <div class="team" id="sharedTeam"></div>
+                <ol class="team" id="sharedTeam"></ol>
                 <div class="codebox"><span class="code" id="teamCode"></span></div>
                 <div class="btn-row">
                     <button id="copyCode" class="btn">Copy code</button>
@@ -96,7 +96,7 @@
                 <button id="lookupBtn" class="btn">Look up</button>
             </div>
             <div id="loaded" hidden>
-                <div class="team" id="loadedTeam"></div>
+                <ol class="team" id="loadedTeam"></ol>
                 <div class="btn-row">
                     <a id="loadedOpen" class="btn btn-primary" href="#">Load in OrreLink</a>
                     <button id="loadedCopy" class="btn">Copy team text</button>
@@ -131,17 +131,13 @@ async function api(path, opts) {
   return j;
 }
 
-// ---- Gen 3 sprites: atlas cell number == the species id stored in the save
+// ---- team list: species names only (Gen 3 internal id -> name)
 let speciesData = null;
 const speciesReady = fetch("/gen3/species.json").then((r) => r.json()).then((d) => (speciesData = d)).catch(() => null);
 function teamHtml(members) {
-  return members.map((m) => {
+  return members.map((m, i) => {
     const s = speciesData && speciesData.species[m.species];
-    const name = s ? s.name : "Pokémon #" + m.species;
-    const x = (m.species % 16) * 64, y = Math.floor(m.species / 16) * 64;
-    const sprite = s ? '<span class="sprite" role="img" aria-label="' + esc(name) + '" style="background-image:url(/gen3/icons.png);background-size:1024px auto;background-position:-' + x + "px -" + y + 'px"></span>' : '<span class="sprite"></span>';
-    const nick = m.nickname && m.nickname.toLowerCase() !== name.toLowerCase() ? esc(m.nickname) + " · " : "";
-    return '<div class="mon">' + sprite + '<div><div class="mon-name">' + esc(name) + '</div><div class="mon-sub">' + nick + "Lv " + m.level + (s && s.dex ? " · #" + s.dex : "") + "</div></div></div>";
+    return '<li data-n="' + (i + 1) + '">' + esc(s ? s.name : "Pokémon #" + m.species) + "</li>";
   }).join("");
 }
 
