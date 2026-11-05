@@ -83,7 +83,12 @@
  * command handshake the GBA answers every exchange with its key state
  * (see padLoop) until the page sends M_ABORT. */
 #define CMD_PAD       8
-#define CMD_MAX       8
+/* OrreLink addition: cartridge info plus random access to the save. Sends
+ * what CMD_INFO sends (sizes, header), stages the whole save in RAM, then
+ * serves 256-byte-aligned ranges of it on request (see rangeLoop). Lets the
+ * page read just the part of a save it needs instead of all 128 KB. */
+#define CMD_RANGES    9
+#define CMD_MAX       9
 
 #define SECTION_BYTES 0x100
 #define SECTION_WORDS (SECTION_BYTES / 4)
@@ -456,6 +461,10 @@ static void writeSave(u32 savesize)
  * exchange N-1, so latency is one poll interval. The page leaves with
  * M_ABORT. Holding L+R+Start+Select for ~2 s also leaves, so the GBA can
  * always go back to answering dumper commands without a power cycle. */
+/* Range requests (CMD_RANGES): the page sends M_RANGE_OFF | start section
+ * (256-byte units), then M_RANGE_LEN | section count. */
+#define M_RANGE_OFF   0x47430000
+#define M_RANGE_LEN   0x47440000
 #define PAD_MAGIC     0x4B500000
 #define PAD_EXIT_KEYS 0x030C
 #define PAD_EXIT_POLLS 500
@@ -474,6 +483,40 @@ static void padLoop(void)
 			return;
 		held = (keys == PAD_EXIT_KEYS) ? held + 1 : 0;
 		if(held >= PAD_EXIT_POLLS)
+			return;
+	}
+}
+
+/* Serve ranges of save_data until the page sends M_ABORT. Every request is
+ * a three-word handshake so a garbled word can never start a transfer:
+ *   page: M_RANGE_OFF|start   GBA answers the next exchange with ~that word
+ *   page: M_RANGE_LEN|count   GBA answers the next exchange with ~that word
+ *                             (or G_FAIL if the range is out of bounds)
+ *   page: M_POLL              the page has now seen both echoes
+ *   page: M_GO                the section stream follows (streamToMaster)
+ * Anything else is ignored and we go back to saying G_READY. */
+static void rangeLoop(u32 savesize)
+{
+	while(1)
+	{
+		u32 w1 = linkXfer(G_READY);
+		if(w1 == M_ABORT)
+			return;
+		if((w1 & 0xFFFF0000) != M_RANGE_OFF)
+		{
+			if(w1 != M_POLL)
+				linkDesyncGuard();
+			continue;
+		}
+		u32 w2 = linkXfer(~w1);
+		u32 off = (w1 & 0xFFFF) * SECTION_BYTES;
+		u32 len = (w2 & 0xFFFF) * SECTION_BYTES;
+		bool ok = (w2 & 0xFFFF0000) == M_RANGE_LEN && len != 0
+			&& off < savesize && len <= savesize - off;
+		linkXfer(ok ? ~w2 : G_FAIL);
+		if(linkXfer(G_READY) != M_GO || !ok)
+			continue;
+		if(!streamToMaster(save_data + off, len, false))
 			return;
 	}
 }
@@ -616,6 +659,28 @@ int main(void) {
 			for(i = 0; i < 0xC0; i += 4)
 				linkXfer(*(vu32*)(0x08000000 + i));
 			uiActivity(ACT_CART_READ);
+		}
+		else if(cmd == CMD_RANGES)
+		{
+			u32 i;
+			for(i = 0; i < 0xC0; i += 4)
+				linkXfer(*(vu32*)(0x08000000 + i));
+			if(savesize == 0)
+			{
+				uiActivity(ACT_NO_SAVE);
+				continue;
+			}
+			uiActivity(ACT_READ_SAVE);
+			linkIdle();
+			readSave(savesize);
+			if(!linkDoneGate())
+			{
+				uiActivity(ACT_STOPPED);
+				continue;
+			}
+			uiActivity(ACT_SEND_SAVE);
+			rangeLoop(savesize);
+			uiActivity(ACT_SAVE_DONE);
 		}
 		else if(cmd == CMD_DUMP_ROM)
 		{

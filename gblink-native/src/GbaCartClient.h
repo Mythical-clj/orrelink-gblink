@@ -47,6 +47,20 @@ public:
   // 5 Left, 6 Up, 7 Down, 8 R, 9 L.
   bool PollPad(uint16_t* keys, uint32_t* raw_reply = nullptr);
   void LeavePadMode();
+
+  // OrreLink agent only: cartridge info plus random access to the save (CMD_RANGES).
+  // BeginRanges returns the same info as ReadInfo and, if the cartridge has a save,
+  // waits until the GBA has staged it in RAM. ReadRange then fetches 256-byte-aligned
+  // pieces. EndRanges returns the GBA to its idle state.
+  CartInfo BeginRanges();
+  std::vector<uint8_t> ReadRange(uint32_t offset, uint32_t length, const Progress& progress = {});
+  void EndRanges();
+  // Gen 3 (Ruby/Sapphire/FireRed/LeafGreen/Emerald) 128 KB flash saves: reads the 28
+  // section footers and, from the active save slot, the two sections holding the
+  // trainer info and the party (about 15 KB instead of 128 KB). Returns a save-sized image
+  // with those parts filled in and zeros elsewhere. Throws GbaCartError "desync" if no valid
+  // save slot is found (the caller can fall back to a full read).
+  std::vector<uint8_t> ReadGen3Team(uint32_t save_size, const Progress& progress = {});
   CartInfo ReadInfo();
   // Dumps the cartridge save (EEPROM 512B/8K, SRAM 32K, Flash 64K/128K).
   std::vector<uint8_t> DumpSave(const Progress& progress = {});
@@ -59,6 +73,7 @@ private:
   void WaitDone(int timeout_ms);
   std::vector<uint32_t> ReadWords(size_t n);
   std::vector<uint8_t> StreamIn(size_t total_bytes, const Progress& progress);
+  static void ParseHeader(CartInfo* info, const std::vector<uint32_t>& words);
   void CheckCancel();
 
   UsbLink& m_usb;

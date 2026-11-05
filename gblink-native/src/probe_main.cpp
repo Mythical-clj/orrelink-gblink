@@ -254,13 +254,93 @@ static int CmdDump(const std::string& out_path, bool trace, int wait_s)
   return 0;
 }
 
+static int CmdTeam(const std::string& out_path, bool trace, int wait_s)
+{
+  UsbLink usb;
+  usb.SetLog(Log);
+  usb.SetTrace(trace);
+  std::string err;
+  if (!usb.Open(&err))
+  {
+    Log("OPEN FAILED: " + err);
+    return 2;
+  }
+  usb.DrainData();
+  usb.SetVoltage3V3();
+  if (g_cable >= 0)
+    usb.SetCableOverride(uint8_t(g_cable));
+  usb.DrainData();
+  if (g_agent_path.empty())
+  {
+    Log("--agent <orrelink-agent_mb.gba> is required for team mode.");
+    return 1;
+  }
+  std::vector<uint8_t> payload;
+  {
+    std::ifstream f(g_agent_path, std::ios::binary);
+    payload.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+  }
+  if (payload.empty())
+  {
+    Log("could not read " + g_agent_path);
+    return 1;
+  }
+  if (!g_loaded && !Multiboot(usb, payload, &err, Log, wait_s))
+  {
+    Log("MULTIBOOT FAILED: " + err);
+    return 4;
+  }
+  GbaCartClient cart(usb, Log);
+  try
+  {
+    if (!cart.Ping(15000))
+    {
+      Log("Agent did not answer after multiboot.");
+      return 5;
+    }
+    const auto t0 = std::chrono::steady_clock::now();
+    const auto since = [&] {
+      return std::to_string(int(std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() * 1000)) + " ms";
+    };
+    CartInfo info;
+    const auto deadline = t0 + std::chrono::seconds(wait_s);
+    for (;;)
+    {
+      info = cart.BeginRanges();
+      if (!info.no_cart)
+        break;
+      Log("No cartridge detected; retrying...");
+      if (std::chrono::steady_clock::now() > deadline)
+        return 6;
+      std::this_thread::sleep_for(std::chrono::seconds(2));
+    }
+    Log("Cartridge '" + info.title + "' code=" + info.code + " save=" + std::to_string(info.save_size) +
+        " (ready after " + since() + ")");
+    const auto t1 = std::chrono::steady_clock::now();
+    const auto data = cart.ReadGen3Team(info.save_size);
+    Log("Team read took " +
+        std::to_string(int(std::chrono::duration<double>(std::chrono::steady_clock::now() - t1).count() * 1000)) +
+        " ms");
+    cart.EndRanges();
+    std::ofstream f(out_path, std::ios::binary);
+    f.write(reinterpret_cast<const char*>(data.data()), std::streamsize(data.size()));
+    Log("Wrote partial save image (" + std::to_string(data.size()) + " bytes) to " + out_path);
+  }
+  catch (const GbaCartError& e)
+  {
+    Log(std::string("TEAM READ FAILED [") + e.code + "]: " + e.what());
+    return 7;
+  }
+  return 0;
+}
+
 int main(int argc, char** argv)
 {
   g_log.open("gblink-probe.log", std::ios::app);
   Log("gblink-probe - GB-Link native client prototype");
   if (argc < 2)
   {
-    Log("usage: gblink-probe list | info [--trace] | dump <out.sav> [--trace] [--wait seconds] [--cable auto|gba|gbc] [--loaded] | pad --agent <file.gba> [--seconds N]");
+    Log("usage: gblink-probe list | info [--trace] | dump <out.sav> [--trace] [--wait seconds] [--cable auto|gba|gbc] [--loaded] | pad --agent <file.gba> [--seconds N] | team <out.sav> --agent <file.gba>");
     return 1;
   }
   const std::string cmd = argv[1];
@@ -294,6 +374,8 @@ int main(int argc, char** argv)
     return CmdInfo(trace);
   if (cmd == "pad")
     return CmdPad(trace, wait_s, seconds);
+  if (cmd == "team" && !out.empty())
+    return CmdTeam(out, trace, wait_s);
   if (cmd == "dump" && !out.empty())
     return CmdDump(out, trace, wait_s);
   Log("bad arguments");
