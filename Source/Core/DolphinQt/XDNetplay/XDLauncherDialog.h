@@ -6,6 +6,8 @@
 #include <memory>
 #include <optional>
 
+#include <string>
+
 #include <QDialog>
 
 #include "DolphinQt/GameList/GameListModel.h"
@@ -131,6 +133,17 @@ private:
   ChecklistRow m_gba_input_row;
 
   QLabel* m_gblink_status = nullptr;
+  // One row per possible GB-Link adapter (shown only while the adapter exists).
+  struct GbLinkAdapterRow
+  {
+    QWidget* widget = nullptr;
+    QLabel* label = nullptr;
+    QComboBox* port_combo = nullptr;
+    std::string key;
+  };
+  GbLinkAdapterRow m_gblink_rows[4];
+  QWidget* m_gblink_read_row = nullptr;
+  QComboBox* m_gblink_read_combo = nullptr;
   QCheckBox* m_gblink_full_read_check = nullptr;
   QCheckBox* m_gblink_menu_check = nullptr;
   QCheckBox* m_gblink_mirror_check = nullptr;
