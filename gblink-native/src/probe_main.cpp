@@ -9,6 +9,7 @@
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <thread>
 
 #include "GbaCartClient.h"
 #include "Multiboot.h"
@@ -77,6 +78,7 @@ static int CmdInfo(bool trace)
 }
 
 static int g_cable = -1;
+static bool g_loaded = false;
 
 static int CmdDump(const std::string& out_path, bool trace, int wait_s)
 {
@@ -101,12 +103,19 @@ static int CmdDump(const std::string& out_path, bool trace, int wait_s)
     usb.SetCableOverride(uint8_t(g_cable));
   usb.DrainData();
 
-  const std::vector<uint8_t> payload(kDumperPayload, kDumperPayload + kDumperPayloadSize);
-  Log("Sending the dumper program to the GBA (this does not touch the cartridge)...");
-  if (!Multiboot(usb, payload, &err, Log, wait_s))
+  if (!g_loaded)
   {
-    Log("MULTIBOOT FAILED: " + err);
-    return 4;
+    const std::vector<uint8_t> payload(kDumperPayload, kDumperPayload + kDumperPayloadSize);
+    Log("Sending the dumper program to the GBA (this does not touch the cartridge)...");
+    if (!Multiboot(usb, payload, &err, Log, wait_s))
+    {
+      Log("MULTIBOOT FAILED: " + err);
+      return 4;
+    }
+  }
+  else
+  {
+    Log("--loaded: assuming the dumper is already running on the GBA");
   }
 
   GbaCartClient cart(usb, Log);
@@ -117,11 +126,21 @@ static int CmdDump(const std::string& out_path, bool trace, int wait_s)
       Log("Dumper did not answer after multiboot.");
       return 5;
     }
-    const CartInfo info = cart.ReadInfo();
-    if (info.no_cart)
+    CartInfo info;
+    const auto cart_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(wait_s);
+    for (int attempt = 1;; attempt++)
     {
-      Log("No cartridge detected. On the GBA multiboot screen hold START+SELECT at the logo so the cart stays inserted/readable, then retry.");
-      return 6;
+      info = cart.ReadInfo();
+      if (!info.no_cart)
+        break;
+      Log("No cartridge detected (try " + std::to_string(attempt) +
+          "). Insert the cartridge into the GBA now (power stays on) and wait; retrying...");
+      if (std::chrono::steady_clock::now() > cart_deadline)
+      {
+        Log("Giving up: no cartridge seen. Check the GBA screen and re-seat the cartridge, then run again with --loaded.");
+        return 6;
+      }
+      std::this_thread::sleep_for(std::chrono::seconds(2));
     }
     Log("Cartridge: '" + info.title + "' code=" + info.code + " maker=" + info.maker +
         " rom=" + std::to_string(info.game_size) + " save=" + std::to_string(info.save_size));
@@ -152,7 +171,7 @@ int main(int argc, char** argv)
   Log("gblink-probe - GB-Link native client prototype");
   if (argc < 2)
   {
-    Log("usage: gblink-probe list | info [--trace] | dump <out.sav> [--trace] [--wait seconds] [--cable auto|gba|gbc]");
+    Log("usage: gblink-probe list | info [--trace] | dump <out.sav> [--trace] [--wait seconds] [--cable auto|gba|gbc] [--loaded]");
     return 1;
   }
   const std::string cmd = argv[1];
@@ -163,6 +182,8 @@ int main(int argc, char** argv)
   {
     if (!std::strcmp(argv[i], "--trace"))
       trace = true;
+    else if (!std::strcmp(argv[i], "--loaded"))
+      g_loaded = true;
     else if (!std::strcmp(argv[i], "--cable") && i + 1 < argc)
     {
       const std::string c = argv[++i];
