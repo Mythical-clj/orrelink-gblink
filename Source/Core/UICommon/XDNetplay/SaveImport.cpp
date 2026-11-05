@@ -9,6 +9,8 @@
 
 #include "UICommon/XDNetplay/BattleCustomizer.h"
 #include "UICommon/XDNetplay/DisposableSave.h"
+#include "UICommon/XDNetplay/Gen3Save.h"
+#include "UICommon/XDNetplay/PartyBundle.h"
 
 #include <fmt/format.h>
 
@@ -422,6 +424,62 @@ bool RestoreDefaultSave(int device, std::string* error)
   Config::SetBase(ImportedSaveKey(device), std::string{});
   Config::Save();
   return true;
+#endif
+}
+
+bool ImportTeamFromPartialSave(const std::string& partial_path, const std::string& built_path,
+                               int device, std::string* status, std::string* error)
+{
+  const auto fail = [error](std::string message) {
+    if (error)
+      *error = std::move(message);
+    return false;
+  };
+  if (device != 1 && device != 2)
+    return fail(fmt::format("no such GBA socket ({})", device));
+#ifndef HAS_LIBMGBA
+  (void)partial_path;
+  (void)built_path;
+  (void)status;
+  return fail("this build has no GBA support");
+#else
+  std::vector<u8> partial;
+  if (!ReadFileBytes(partial_path, &partial))
+    return fail("could not read " + partial_path);
+  std::string parse_error;
+  const auto save = EmeraldSave::Create(std::move(partial), &parse_error);
+  if (!save)
+    return fail("the cartridge save could not be read (" + parse_error + ")");
+
+  // Only the two sections that were actually read can be checked.
+  const Gen3Game game = EmeraldSave::DetectGame(*save);
+  for (const auto& bad : save->VerifyAllChecksums(game))
+  {
+    if (bad.block == save->GetActiveBlock() && (bad.section_id == 0 || bad.section_id == 1))
+      return fail("the team data read from the cartridge failed its checksum — try again");
+  }
+  const auto bundle = PartyBundle::Extract(*save, &parse_error);
+  if (!bundle)
+    return fail(parse_error);
+
+  const std::string template_path =
+      File::GetSysDirectory() +
+      (device == 1 ? "XDNetplay/EMERALD-2.sav" : "XDNetplay/EMERALD-3.sav");
+  std::vector<u8> template_bytes;
+  if (!ReadFileBytes(template_path, &template_bytes))
+    return fail("bundled template missing: " + template_path);
+  const auto built = PartyBundle::BuildSave(std::move(template_bytes), *bundle, &parse_error);
+  if (!built)
+    return fail(parse_error);
+
+  File::CreateFullPath(built_path);
+  {
+    File::IOFile out(built_path, "wb");
+    const auto& bytes = built->ToBytes();
+    if (!out || !out.WriteBytes(bytes.data(), bytes.size()))
+      return fail("could not write " + built_path);
+  }
+  return ImportUserSave(built_path, device, status, error);
 #endif
 }
 

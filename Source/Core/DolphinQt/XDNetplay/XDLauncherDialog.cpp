@@ -419,6 +419,11 @@ void XDLauncherDialog::CreateMainLayout()
   auto* gblink_box = new QGroupBox(tr("Real GBA (GB-Link adapter)"));
   auto* gblink_layout = new QGridLayout;
   m_gblink_status = MakeNoteLabel(QString());
+  m_gblink_full_read_check = new QCheckBox(tr("Read the whole save (slower)"));
+  m_gblink_full_read_check->setChecked(false);
+  m_gblink_full_read_check->setToolTip(
+      tr("By default only your trainer info and team are read from the cartridge, which is much "
+         "faster. Tick this to read and import the entire save instead."));
   m_gblink_pad_check = new QCheckBox(tr("Use my real GBA as the controller"));
   m_gblink_pad_check->setChecked(true);
   m_gblink_pad_check->setToolTip(
@@ -428,6 +433,7 @@ void XDLauncherDialog::CreateMainLayout()
          "release it."));
   gblink_layout->addWidget(m_gblink_status, 0, 0);
   gblink_layout->addWidget(m_gblink_pad_check, 1, 0);
+  gblink_layout->addWidget(m_gblink_full_read_check, 2, 0);
   gblink_layout->setColumnStretch(0, 1);
   gblink_box->setLayout(gblink_layout);
   layout->addWidget(gblink_box);
@@ -1286,7 +1292,15 @@ void XDLauncherDialog::OnImportFromGbLink(int device)
           }
           std::string status;
           std::string error;
-          if (!XDNetplay::SaveImport::ImportUserSave(backup_path, device, &status, &error))
+          const bool imported =
+              dump.partial ?
+                  XDNetplay::SaveImport::ImportTeamFromPartialSave(
+                      backup_path,
+                      File::GetUserPath(D_USER_IDX) + "GBLink Dumps/team-port" +
+                          std::to_string(device) + ".sav",
+                      device, &status, &error) :
+                  XDNetplay::SaveImport::ImportUserSave(backup_path, device, &status, &error);
+          if (!imported)
           {
             ModalMessageBox::warning(
                 this, tr("OrreLink"),
@@ -1313,7 +1327,8 @@ void XDLauncherDialog::OnImportFromGbLink(int device)
             if (progress_ptr)
               progress_ptr->setValue(percent);
           });
-      });
+      },
+      !m_gblink_full_read_check->isChecked());
   if (!queued)
   {
     progress->close();

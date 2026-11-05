@@ -3,6 +3,7 @@
 
 #include "InputCommon/GBLink/GBLinkManager.h"
 
+#include <algorithm>
 #include <chrono>
 #include <utility>
 
@@ -97,7 +98,8 @@ void Manager::SetControllerEnabled(bool enabled)
   m_cv.notify_all();
 }
 
-bool Manager::RequestDump(std::function<void(DumpResult)> done, std::function<void(int)> progress)
+bool Manager::RequestDump(std::function<void(DumpResult)> done, std::function<void(int)> progress,
+                          bool team_only)
 {
   {
     std::lock_guard lock(m_mutex);
@@ -106,6 +108,7 @@ bool Manager::RequestDump(std::function<void(DumpResult)> done, std::function<vo
     m_dump = std::make_unique<DumpRequest>();
     m_dump->done = std::move(done);
     m_dump->progress = std::move(progress);
+    m_dump->team_only = team_only;
     m_cancel_dump = false;
   }
   m_cv.notify_all();
@@ -270,9 +273,10 @@ void Manager::Run()
           SetStatus(State::ReadingCart, "Reading your cartridge...");
           CartInfo info;
           const auto cart_deadline = Clock::now() + std::chrono::seconds(kDumpWaitForCartSeconds);
+          const bool try_team = req->team_only && agent_has_pad;
           while (true)
           {
-            info = cart->ReadInfo();
+            info = try_team ? cart->BeginRanges() : cart->ReadInfo();
             if (!info.no_cart)
               break;
             SetStatus(State::ReadingCart,
@@ -285,14 +289,55 @@ void Manager::Run()
           result.code = info.code;
           SetStatus(State::ReadingCart, "Reading the save from " + info.title + "...");
           int last_pct = -1;
-          result.save = cart->DumpSave([&](size_t done, size_t total) {
+          const auto report = [&](size_t done, size_t total) {
             const int pct = static_cast<int>(done * 100 / total);
             if (pct != last_pct && req->progress)
             {
               last_pct = pct;
               req->progress(pct);
             }
-          });
+          };
+          const std::string gc = info.code.substr(0, 3);
+          const bool gen3 = gc == "AXV" || gc == "AXP" || gc == "BPR" || gc == "BPG" || gc == "BPE";
+          bool have_save = false;
+          if (try_team)
+          {
+            if (info.save_size == 131072 && gen3)
+            {
+              try
+              {
+                result.save = cart->ReadGen3Team(info.save_size, report);
+                result.partial = true;
+                have_save = true;
+              }
+              catch (const GbaCartError& e)
+              {
+                if (e.code != "desync")
+                  throw;
+              }
+            }
+            if (!have_save && info.save_size != 0)
+            {
+              // Ranged agent but not a Gen 3 team read: fetch the whole save through ranges.
+              result.save.clear();
+              for (uint32_t off = 0; off < info.save_size; off += 0x4000)
+              {
+                const uint32_t len = std::min<uint32_t>(0x4000, info.save_size - off);
+                const auto part = cart->ReadRange(off, len);
+                result.save.insert(result.save.end(), part.begin(), part.end());
+                report(off + len, info.save_size);
+              }
+              result.partial = false;
+              have_save = true;
+            }
+            cart->EndRanges();
+            if (!have_save)
+              throw GbaCartError("no-save", "This cartridge has no save data.");
+          }
+          else
+          {
+            result.save = cart->DumpSave(report);
+          }
           result.ok = true;
         }
         catch (const GbaCartError& e)
