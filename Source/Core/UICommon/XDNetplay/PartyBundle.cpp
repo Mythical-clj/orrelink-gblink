@@ -63,17 +63,9 @@ std::optional<std::vector<u8>> Extract(const EmeraldSave& save, std::string* err
     return std::nullopt;
   };
 
-  // Emerald and Ruby/Sapphire share every offset this reads (section-0 trainer
-  // block and section-1 party area, verified); FireRed/LeafGreen does not --
-  // its party lives elsewhere in section 1, and because the section checksum
-  // lengths coincide, Emerald-offset reads from an FRLG save return plausible
-  // garbage instead of failing. Refuse loudly, same reasoning as the host-side
-  // FRLG refusal in TeamInjector.
-  if (EmeraldSave::DetectGame(save) == Gen3Game::FireRedLeafGreen)
-  {
-    return fail("this is a FireRed/LeafGreen save, which stores its party at different offsets -- "
-                "only Emerald and Ruby/Sapphire saves can be submitted directly");
-  }
+  // Emerald and Ruby/Sapphire share every offset this reads; FireRed/LeafGreen
+  // keeps its party at 0x34/0x38 in section 1, which EmeraldSave::ReadParty
+  // selects through DetectGame, so all five Gen 3 games are accepted here.
 
   // ReadParty already reads the newest valid slot (EmeraldSave::Create picked
   // the active block) and verifies each non-empty slot's substructure
