@@ -20,6 +20,8 @@
 #include <thread>
 #include <vector>
 
+#include "InputCommon/GBLink/ScreenMirror.h"
+
 namespace GBLink
 {
 enum class State
@@ -72,6 +74,16 @@ public:
   void SetMenuNavigation(bool on) { m_menu_nav = on; }
   bool IsMenuNavigation() const { return m_menu_nav; }
 
+  // Show the emulated GBA's screen on the real GBA while it is a controller. Frames come from
+  // the emulated GBA the real one controls (SubmitMirrorFrame, emulation thread).
+  void SetScreenMirror(bool on) { m_mirror_on = on; }
+  bool IsScreenMirror() const { return m_mirror_on; }
+  // True while the screen is being mirrored (cheap; the emulator checks it every frame).
+  bool WantsMirrorFrames() const { return m_mirror_on && m_pad_live; }
+  // |device| is the emulated GBA's index; the first one to submit becomes the mirrored one until
+  // the controller reconnects. |xbgr| is 240*160 mGBA pixels.
+  void SubmitMirrorFrame(int device, const uint32_t* xbgr, size_t count);
+
   // Asynchronous, read-only cartridge save dump. |done| runs on the manager thread.
   // |progress| gets 0-100. Returns false if a dump is already queued.
   // team_only: read just the Gen 3 trainer + party sections when the OrreLink agent is running
@@ -111,6 +123,9 @@ private:
   std::atomic<bool> m_controller_enabled{true};
   std::atomic<bool> m_pad_live{false};
   std::atomic<bool> m_menu_nav{false};
+  std::atomic<bool> m_mirror_on{true};
+  std::atomic<int> m_mirror_device{-1};
+  ScreenMirror m_mirror;
   std::atomic<uint16_t> m_pad_keys{0};
   mutable std::atomic<uint64_t> m_query_count{0};
   mutable std::atomic<uint64_t> m_query_live{0};

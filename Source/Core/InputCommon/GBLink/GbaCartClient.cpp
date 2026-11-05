@@ -215,6 +215,35 @@ bool GbaCartClient::PollPad(uint16_t* keys, uint32_t* raw_reply)
   return true;
 }
 
+bool GbaCartClient::SendTiles(const std::vector<uint32_t>& tiles, uint16_t* keys)
+{
+  constexpr uint32_t M_TILES = 0x47540000, PAD_ACK = 0x4B410000;
+  const size_t n = tiles.size() / kTileWords;
+  if (n == 0 || n > kTilesPerPacket || tiles.size() != n * kTileWords)
+    return false;
+  std::vector<uint32_t> tx;
+  tx.reserve(tiles.size() + 3);
+  tx.push_back(M_TILES | uint32_t(n));
+  uint32_t xsum = 0;
+  for (const uint32_t w : tiles)
+  {
+    tx.push_back(w);
+    xsum ^= w;
+  }
+  tx.push_back(xsum);
+  tx.push_back(M_POLL);  // the GBA's acknowledgement arrives in this exchange
+  const auto resp = XferBatch(tx);
+  for (size_t i = resp.size() - 1; i-- > 0;)
+  {
+    if ((resp[i] & 0xFFFF0000u) == PAD_MAGIC)
+    {
+      *keys = static_cast<uint16_t>(resp[i] & 0x03FF);
+      break;
+    }
+  }
+  return resp.back() == (PAD_ACK | 1u);
+}
+
 void GbaCartClient::LeavePadMode()
 {
   Xfer(M_ABORT);

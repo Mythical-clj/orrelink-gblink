@@ -563,6 +563,7 @@
     <ClInclude Include="InputCommon\GBLink\GBLinkManager.h" />
     <ClInclude Include="InputCommon\GBLink\Multiboot.h" />
     <ClInclude Include="InputCommon\GBLink\Payloads.h" />
+    <ClInclude Include="InputCommon\GBLink\ScreenMirror.h" />
     <ClInclude Include="InputCommon\GBLink\Spi32.h" />
     <ClInclude Include="InputCommon\GBLink\UsbLink.h" />
     <ClInclude Include="InputCommon\ControllerInterface\ControllerInterface.h" />
@@ -1320,6 +1321,10 @@
       <TreatWarningAsError>false</TreatWarningAsError>
     </ClCompile>
     <ClCompile Include="InputCommon\GBLink\Payloads.cpp">
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+      <TreatWarningAsError>false</TreatWarningAsError>
+    </ClCompile>
+    <ClCompile Include="InputCommon\GBLink\ScreenMirror.cpp">
       <WarningLevel>TurnOffAllWarnings</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
     </ClCompile>

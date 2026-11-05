@@ -100,6 +100,15 @@ Status Manager::GetStatus() const
   return m_status;
 }
 
+void Manager::SubmitMirrorFrame(int device, const uint32_t* xbgr, size_t count)
+{
+  int expected = -1;
+  m_mirror_device.compare_exchange_strong(expected, device);
+  if (m_mirror_device != device)
+    return;
+  m_mirror.SubmitFrame(xbgr, count);
+}
+
 void Manager::SetStatus(State state, std::string text)
 {
   std::lock_guard lock(m_mutex);
@@ -167,6 +176,9 @@ void Manager::Run()
   bool agent_loaded = false;
   bool agent_has_pad = false;
   uint64_t stat_polls = 0;
+  uint64_t mirror_ok = 0, mirror_failed = 0;
+  int mirror_fails = 0;
+  std::vector<uint32_t> mirror_packet;
   auto stat_time = Clock::now();
   bool pad_active = false;
   int bad_polls = 0;
@@ -416,12 +428,34 @@ void Manager::Run()
           if (!image_ok)
             cart->EnterPadMode();
           pad_active = true;
+          m_mirror.Reset();
+          m_mirror_device = -1;
+          mirror_fails = 0;
           bad_polls = 0;
           SetStatus(State::ControllerActive, "Your GBA is acting as a controller");
         }
         uint16_t keys = 0;
         uint32_t raw = 0;
         stat_polls++;
+        if (m_mirror_on && mirror_fails < 5 && m_mirror.NextPacket(&mirror_packet, 12))
+        {
+          uint16_t packet_keys = m_pad_keys;
+          if (cart->SendTiles(mirror_packet, &packet_keys))
+          {
+            m_mirror.PacketAcked();
+            mirror_fails = 0;
+            mirror_ok++;
+            m_pad_keys = packet_keys;
+          }
+          else
+          {
+            m_mirror.PacketFailed();
+            mirror_failed++;
+            if (++mirror_fails >= 5)
+              LogLine("screen mirror switched off: the GBA did not acknowledge 5 packets in a row "
+                      "(old agent?)");
+          }
+        }
         if (cart->PollPad(&keys, &raw))
         {
           bad_polls = 0;
@@ -454,6 +488,9 @@ void Manager::Run()
                               "live={} keys=0x{:03x}",
                               stat_polls, m_query_count.exchange(0), m_query_live.exchange(0),
                               m_pad_live.load(), m_pad_keys.load()));
+          LogLine(fmt::format("mirror: {} packets acknowledged, {} failed (device {})", mirror_ok,
+                              mirror_failed, m_mirror_device.load()));
+          mirror_ok = mirror_failed = 0;
           stat_polls = 0;
           stat_time = Clock::now();
         }

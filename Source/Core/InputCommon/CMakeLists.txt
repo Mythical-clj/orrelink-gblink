@@ -160,6 +160,8 @@ if(NOT ANDROID)
     GBLink/Multiboot.h
     GBLink/Payloads.cpp
     GBLink/Payloads.h
+    GBLink/ScreenMirror.cpp
+    GBLink/ScreenMirror.h
     GBLink/Spi32.cpp
     GBLink/Spi32.h
     GBLink/UsbLink.cpp
