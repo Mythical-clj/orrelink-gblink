@@ -1,0 +1,167 @@
+From e70b1d40527b85ac2afeb008f0611b5794f2eec5 Mon Sep 17 00:00:00 2001
+From: t <t@t>
+Date: Thu, 5 Nov 2026 11:45:36 -0600
+Subject: [PATCH] NetPlay: send the cartridge team automatically when joining
+ an XD room
+
+The team box in the launcher is hidden until an optional team-code site is configured.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01764cASb9aVVk2m6JupRMj5
+---
+ .../Core/DolphinQt/NetPlay/NetPlayDialog.cpp  | 69 +++++++++++++++++++
+ Source/Core/DolphinQt/NetPlay/NetPlayDialog.h |  7 ++
+ .../DolphinQt/XDNetplay/XDLauncherDialog.cpp  | 11 +++
+ 3 files changed, 87 insertions(+)
+
+diff --git a/Source/Core/DolphinQt/NetPlay/NetPlayDialog.cpp b/Source/Core/DolphinQt/NetPlay/NetPlayDialog.cpp
+index d8ec0264e..69cfefc62 100644
+--- a/Source/Core/DolphinQt/NetPlay/NetPlayDialog.cpp
++++ b/Source/Core/DolphinQt/NetPlay/NetPlayDialog.cpp
+@@ -864,6 +864,7 @@ void NetPlayDialog::show(std::string nickname, bool use_traversal)
+   m_use_traversal = use_traversal;
+   m_buffer_size = 0;
+   m_old_player_count = 0;
++  m_auto_team_role = -1;
+ 
+   m_room_box->clear();
+   m_chat_edit->clear();
+@@ -1134,6 +1135,13 @@ void NetPlayDialog::UpdateGUI()
+                             local_role == NetPlay::XdRole::Unknown;
+     m_submit_team_button->setEnabled(may_submit);
+     m_ready_button->setVisible(is_xd && may_submit);
++    // Joining a room sends the cartridge team on its own, once per role.
++    if (is_xd && may_submit && room_format.has_value() &&
++        m_auto_team_role != static_cast<int>(local_role))
++    {
++      m_auto_team_role = static_cast<int>(local_role);
++      AutoSubmitSaveTeam(m_auto_team_role);
++    }
+     m_submit_team_button->setToolTip(
+         may_submit                    ? JoinerSubmitTeamToolTip() :
+         multi_seats || host_watching ? tr("Only seated players can submit a team.") :
+@@ -1768,6 +1776,67 @@ void NetPlayDialog::OnSubmitTeam()
+   }).detach();
+ }
+ 
++bool NetPlayDialog::SendSaveTeam(bool announce_failures)
++{
++#ifdef HAS_LIBMGBA
++  const auto client = Settings::Instance().GetNetPlayClient();
++  if (!client)
++    return false;
++  const auto fail = [&](const QString& why) {
++    if (announce_failures)
++      DisplayMessage(why, "");
++    return false;
++  };
++
++  std::string rom = Config::Get(Config::MAIN_GBA_ROM_PATHS[1]);
++  if (rom.empty() || !File::Exists(rom))
++    rom = Config::Get(Config::MAIN_GBA_ROM_PATHS[2]);
++  if (rom.empty() || !File::Exists(rom))
++    return fail(tr("No Emerald ROM configured — run the launcher checklist first."));
++  const std::string save_path = HW::GBA::Core::GetSavePath(rom, 1);
++  if (!File::Exists(save_path))
++  {
++    return fail(tr("No team to send yet — read your cartridge from the launcher, or build a team "
++                   "in the Team Editor."));
++  }
++  std::string error;
++  const std::optional<XDNetplay::EmeraldSave> save = XDNetplay::LoadSaveFile(save_path, &error);
++  if (!save)
++    return fail(tr("Could not open your save: %1").arg(QString::fromStdString(error)));
++  const std::optional<std::vector<u8>> bundle = XDNetplay::PartyBundle::Extract(*save, &error);
++  if (!bundle)
++    return fail(tr("Could not use your save: %1").arg(QString::fromStdString(error)));
++
++  const int model_id = Config::Get(Config::MAIN_XD_SUBMIT_MODEL);
++  const std::optional<int> model =
++      model_id > 0 ? std::optional<int>(model_id) : std::nullopt;
++  client->SendTeamSubmission(XDNetplay::BuildBundleSubmissionPayload(*bundle, model, false));
++  return true;
++#else
++  Q_UNUSED(announce_failures);
++  return false;
++#endif
++}
++
++void NetPlayDialog::AutoSubmitSaveTeam(int role)
++{
++  Q_UNUSED(role);
++  // A player who last sent a typed Showdown team keeps doing that by hand; an
++  // untouched setup, or one that has read a cartridge, sends the save's team.
++  const bool has_typed_team =
++      !Config::Get(Config::MAIN_XD_SUBMIT_USE_SAVE) &&
++      XDNetplay::PartyBundle::Base64Decode(Config::Get(Config::MAIN_XD_SUBMIT_TEAM_B64))
++          .has_value();
++  if (has_typed_team)
++    return;
++  if (SendSaveTeam(true))
++  {
++    DisplayMessage(tr("Your save's team was sent to the host automatically. Use Submit Team to "
++                      "change it."),
++                   "");
++  }
++}
++
+ void NetPlayDialog::OnSubmitHostTeam()
+ {
+   // Host side. The joiner's sheet minus "Use my save": the host's save already
+diff --git a/Source/Core/DolphinQt/NetPlay/NetPlayDialog.h b/Source/Core/DolphinQt/NetPlay/NetPlayDialog.h
+index 9ae7e1592..9a76f290f 100644
+--- a/Source/Core/DolphinQt/NetPlay/NetPlayDialog.h
++++ b/Source/Core/DolphinQt/NetPlay/NetPlayDialog.h
+@@ -120,6 +120,11 @@ private:
+   void OnChat();
+   void OnSubmitTeam();
+   void OnSubmitHostTeam();
++  // Sends the party from the player's own port-2 save (the "Use my save" path of
++  // Submit Team) without a dialog. Returns true when a bundle was sent; messages
++  // say why not. Used by AutoSubmitSaveTeam on joining a room.
++  bool SendSaveTeam(bool announce_failures);
++  void AutoSubmitSaveTeam(int role);
+   bool HostWriteAllowed();
+   void ApplyHostTeam(const std::string& showdown_text, const std::string& trainer_name,
+                      bool raise_to_level_100);
+@@ -213,6 +218,8 @@ private:
+   int m_player_count = 0;
+   int m_old_player_count = 0;
+   bool m_host_input_authority = false;
++  // The role the cartridge team was last auto-sent under (-1: not yet this room).
++  int m_auto_team_role = -1;
+ 
+   StartGameCallback m_start_game_callback;
+ };
+diff --git a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
+index a8752ecd8..36281b0d6 100644
+--- a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
++++ b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
+@@ -502,6 +502,10 @@ void XDLauncherDialog::CreateMainLayout()
+   team_layout->addWidget(m_share_team_button, 1, 0);
+   team_layout->addWidget(m_load_team_button, 1, 1);
+   team_box->setLayout(team_layout);
++  // Rooms send the team themselves; these buttons need an optional team-code
++  // site, so they only appear once a hub URL has been set (QSettings
++  // "xdnetplay/huburl").
++  team_box->setVisible(!QSettings().value(QStringLiteral("xdnetplay/huburl")).toString().isEmpty());
+   layout->addWidget(team_box);
+ 
+   auto* battle_box = new QGroupBox(tr("Battle"));
+@@ -1354,6 +1358,13 @@ void XDLauncherDialog::OnImportFromGbLink(int device)
+           }
+           else
+           {
++            // A cartridge team is what the player means to bring to a room, so
++            // joining one sends it on its own (NetPlayDialog::AutoSubmitSaveTeam).
++            if (device == 1)
++            {
++              Config::SetBaseOrCurrent(Config::MAIN_XD_SUBMIT_USE_SAVE, true);
++              Config::Save();
++            }
+             ModalMessageBox::information(
+                 this, tr("OrreLink"),
+                 tr("Read the save from %1.\n\n%2\n\nA backup copy of the raw cartridge save is "
+-- 
+2.43.0
+
