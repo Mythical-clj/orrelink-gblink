@@ -110,8 +110,8 @@ using a real GBA needs the adapter.
 
 ### Changes by patch
 
-The fork is a set of patches (`patches/0001`-`0199`) applied on a pinned
-Dolphin base. The GB-Link work is patches **0184-0199**:
+The fork is a set of patches (`patches/0001`-`0200`) applied on a pinned
+Dolphin base. The GB-Link work is patches **0184-0200**:
 adapter and agent plumbing, controller, cartridge read, team-only read,
 diagnostics log, menu navigation, standby picture, team-code buttons
 (hidden by default), automatic team send on joining, and screen mirroring.

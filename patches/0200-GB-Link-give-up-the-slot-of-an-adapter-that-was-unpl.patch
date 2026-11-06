@@ -1,0 +1,102 @@
+From 5e0db0533c45f13fbcc741e1b4455350c2af4299 Mon Sep 17 00:00:00 2001
+From: t <t@t>
+Date: Fri, 6 Nov 2026 13:24:06 -0600
+Subject: [PATCH] GB-Link: give up the slot of an adapter that was unplugged or
+ moved to another USB port
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01764cASb9aVVk2m6JupRMj5
+---
+ .../Core/InputCommon/GBLink/GBLinkManager.cpp | 55 ++++++++++++++++---
+ 1 file changed, 47 insertions(+), 8 deletions(-)
+
+diff --git a/Source/Core/InputCommon/GBLink/GBLinkManager.cpp b/Source/Core/InputCommon/GBLink/GBLinkManager.cpp
+index 4e9b7b03b..7b471b4d1 100644
+--- a/Source/Core/InputCommon/GBLink/GBLinkManager.cpp
++++ b/Source/Core/InputCommon/GBLink/GBLinkManager.cpp
+@@ -4,6 +4,7 @@
+ #include "InputCommon/GBLink/GBLinkManager.h"
+ 
+ #include <algorithm>
++#include <map>
+ #include <chrono>
+ #include <utility>
+ 
+@@ -646,28 +647,66 @@ void Manager::Stop()
+ 
+ void Manager::Supervise()
+ {
++  std::map<std::string, int> missing;  // seconds an adapter's USB port has been empty
+   while (true)
+   {
++    std::vector<DeviceInfo> found = UsbLink::List();
++    std::sort(found.begin(), found.end(),
++              [](const DeviceInfo& a, const DeviceInfo& b) { return a.Key() < b.Key(); });
++    std::vector<Link*> retire;
+     {
+-      std::vector<DeviceInfo> found = UsbLink::List();
+-      std::sort(found.begin(), found.end(),
+-                [](const DeviceInfo& a, const DeviceInfo& b) { return a.Key() < b.Key(); });
+       std::lock_guard lock(m_mutex);
+       if (m_quit)
+         return;
++      std::vector<Link*> active;
++      for (auto& slot : m_links)
++      {
++        if (Link* l = slot.load())
++          active.push_back(l);
++      }
++      // An adapter that was unplugged (or moved to another port) gives its slot up after a few
++      // seconds, so a moved adapter does not leave a ghost row behind or use up one of the four.
++      for (Link* l : active)
++      {
++        const bool present = std::any_of(found.begin(), found.end(),
++                                         [&](const DeviceInfo& d) { return d.Key() == l->Key(); });
++        if (present)
++          missing.erase(l->Key());
++        else if (++missing[l->Key()] >= 5)
++          retire.push_back(l);
++      }
++    }
++    for (Link* l : retire)
++      l->Stop();
++    {
++      std::lock_guard lock(m_mutex);
++      if (m_quit)
++        return;
++      std::vector<Link*> active;
++      for (auto& slot : m_links)
++      {
++        Link* l = slot.load();
++        if (l && std::find(retire.begin(), retire.end(), l) == retire.end())
++          active.push_back(l);
++        else if (l)
++          missing.erase(l->Key());
++      }
+       for (const DeviceInfo& d : found)
+       {
+         const std::string key = d.Key();
+-        const bool known = std::any_of(m_owned.begin(), m_owned.end(),
+-                                       [&](const auto& l) { return l->Key() == key; });
+-        if (known || m_owned.size() >= size_t(kMaxAdapters))
++        const bool known = std::any_of(active.begin(), active.end(),
++                                       [&](Link* l) { return l->Key() == key; });
++        if (known || active.size() >= size_t(kMaxAdapters))
+           continue;
+         auto link = std::make_unique<Link>(*this, key);
+         link->SetControllerEnabled(m_controller_wanted);
+         link->Start();
+-        m_links[m_owned.size()] = link.get();
+-        m_owned.push_back(std::move(link));
++        active.push_back(link.get());
++        m_owned.push_back(std::move(link));  // retired Links stay allocated: the emulator may
++                                             // still hold a pointer to one for a moment
+       }
++      for (size_t i = 0; i < m_links.size(); i++)
++        m_links[i] = i < active.size() ? active[i] : nullptr;
+     }
+     std::unique_lock lock(m_mutex);
+     m_cv.wait_for(lock, std::chrono::milliseconds(1000), [this] { return m_quit; });
+-- 
+2.43.0
+
