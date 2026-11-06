@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <map>
 #include <chrono>
+#include <thread>
 #include <utility>
 
 #include <fmt/format.h>
@@ -291,6 +292,11 @@ void Link::Run()
       }
       usb.DrainData();
       usb.SetVoltage3V3();
+      // Put the adapter in GB-Link mode with the multiboot timing before polling for the GBA;
+      // a freshly plugged adapter reads 0x00000000 until this is done.
+      usb.SetMode(MODE_GB_LINK);
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      usb.SetTimingConfig(36, 4);
       usb.DrainData();
       agent_loaded = false;
       pad_active = false;
