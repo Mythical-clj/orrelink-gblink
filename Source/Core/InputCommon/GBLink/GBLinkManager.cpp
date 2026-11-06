@@ -155,6 +155,13 @@ bool Link::RequestDump(std::function<void(DumpResult)> done, std::function<void(
 
 void Link::CancelDump()
 {
+  // A dialog that is merely closing after a finished read also lands here; that must not
+  // poison whatever the link does next.
+  {
+    std::lock_guard lock(m_mutex);
+    if (!m_dump && !m_dump_active)
+      return;
+  }
   m_cancel_dump = true;
   m_cv.notify_all();
 }
@@ -238,7 +245,13 @@ void Link::Run()
   };
 
   // Polls for the GBA's multiboot handshake. True if it is waiting for a program.
-  const auto gba_is_waiting = [&] { return (Spi32(usb, 0x6202) >> 16) == 0x7202; };
+  auto last_wait_log = Clock::now();
+  uint32_t last_wait_reply = 0;
+  const auto gba_is_waiting = [&] {
+    const uint32_t reply = Spi32(usb, 0x6202);
+    last_wait_reply = reply;
+    return (reply >> 16) == 0x7202;
+  };
 
   while (!quitting())
   {
@@ -289,6 +302,7 @@ void Link::Run()
       if (dump_pending())
       {
         auto req = take_dump();
+        m_dump_active = true;
         DumpResult result;
         try
         {
@@ -404,6 +418,8 @@ void Link::Run()
           drop_adapter();
         else
           SetStatus(State::AgentIdle, result.ok ? "Cartridge read." : result.error);
+        m_dump_active = false;
+        m_cancel_dump = false;
         if (req->done)
           req->done(std::move(result));
         continue;
@@ -522,9 +538,20 @@ void Link::Run()
           if (gba_is_waiting())
             load_agent();
           else
+          {
+            // Say now and then what the adapter sees, so a GBA that never shows up can be told
+            // apart from a cable or power problem (a GBA waiting for a program reads 0x7202xxxx).
+            if (Clock::now() - last_wait_log > std::chrono::seconds(15))
+            {
+              last_wait_log = Clock::now();
+              LogLine(fmt::format("still waiting for a GBA at the multiboot screen: the link reads "
+                                  "0x{:08x} (a waiting GBA reads 0x7202....)",
+                                  last_wait_reply));
+            }
             SetStatus(State::WaitingForGba,
                       "GB-Link connected. Power on your GBA holding START + SELECT "
                       "(no cartridge needed) to use it as a controller.");
+          }
           if (usb.Lost())
             drop_adapter();
           else
