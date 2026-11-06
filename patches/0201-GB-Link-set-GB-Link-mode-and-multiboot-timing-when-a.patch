@@ -1,0 +1,41 @@
+From f75d0504111cde3b0ec95db0a7d7f08096297dcc Mon Sep 17 00:00:00 2001
+From: t <t@t>
+Date: Fri, 6 Nov 2026 13:44:04 -0600
+Subject: [PATCH] GB-Link: set GB-Link mode and multiboot timing when an
+ adapter opens, before polling for the GBA
+
+The wait loop polled the link before any mode/timing was configured (only the multiboot upload did that), so a freshly opened adapter read 0x00000000 and never saw a GBA.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01764cASb9aVVk2m6JupRMj5
+---
+ Source/Core/InputCommon/GBLink/GBLinkManager.cpp | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/Source/Core/InputCommon/GBLink/GBLinkManager.cpp b/Source/Core/InputCommon/GBLink/GBLinkManager.cpp
+index 7b471b4d1..cc000a530 100644
+--- a/Source/Core/InputCommon/GBLink/GBLinkManager.cpp
++++ b/Source/Core/InputCommon/GBLink/GBLinkManager.cpp
+@@ -6,6 +6,7 @@
+ #include <algorithm>
+ #include <map>
+ #include <chrono>
++#include <thread>
+ #include <utility>
+ 
+ #include <fmt/format.h>
+@@ -291,6 +292,11 @@ void Link::Run()
+       }
+       usb.DrainData();
+       usb.SetVoltage3V3();
++      // Put the adapter in GB-Link mode with the multiboot timing before polling for the GBA;
++      // a freshly plugged adapter reads 0x00000000 until this is done.
++      usb.SetMode(MODE_GB_LINK);
++      std::this_thread::sleep_for(std::chrono::milliseconds(100));
++      usb.SetTimingConfig(36, 4);
+       usb.DrainData();
+       agent_loaded = false;
+       pad_active = false;
+-- 
+2.43.0
+
