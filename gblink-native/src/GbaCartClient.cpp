@@ -215,15 +215,20 @@ bool GbaCartClient::PollPad(uint16_t* keys, uint32_t* raw_reply)
   return true;
 }
 
-bool GbaCartClient::SendTiles(const std::vector<uint32_t>& tiles, uint16_t* keys)
+bool GbaCartClient::SendTiles(const std::vector<uint32_t>& packet, uint16_t* keys)
 {
+  // packet[0] is the header (ScreenMirror::kFlagFlip / kFlagPage1), then n tiles.
   constexpr uint32_t M_TILES = 0x47540000, PAD_ACK = 0x4B410000;
-  const size_t n = tiles.size() / kTileWords;
-  if (n == 0 || n > kTilesPerPacket || tiles.size() != n * kTileWords)
+  if (packet.empty() || (packet.size() - 1) % kTileWords != 0)
     return false;
+  const size_t n = (packet.size() - 1) / kTileWords;
+  const uint32_t flags = packet[0] & 0x300;
+  if (n > kTilesPerPacket || (n == 0 && !(flags & 0x100)))
+    return false;
+  const std::vector<uint32_t> tiles(packet.begin() + 1, packet.end());
   std::vector<uint32_t> tx;
   tx.reserve(tiles.size() + 2);
-  tx.push_back(M_TILES | uint32_t(n));
+  tx.push_back(M_TILES | flags | uint32_t(n));
   uint32_t xsum = 0;
   for (const uint32_t w : tiles)
   {

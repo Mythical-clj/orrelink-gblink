@@ -57,8 +57,10 @@ uint32_t Word(const uint8_t* p)
 }
 }  // namespace
 
-ScreenMirror::ScreenMirror() : m_pending(kWidth * kHeight, 0), m_sent(kWidth * kHeight, 0)
+ScreenMirror::ScreenMirror() : m_pending(kWidth * kHeight, 0), m_target(kWidth * kHeight, 0)
 {
+  m_shadow[0].assign(kWidth * kHeight, 0xFF);
+  m_shadow[1].assign(kWidth * kHeight, 0xFF);
 }
 
 uint16_t ScreenMirror::Quantized555(uint32_t xbgr)
@@ -82,9 +84,26 @@ void ScreenMirror::Reset()
   m_palette_sent = false;
   m_have_frame = false;  // wait for a fresh frame before replacing what the GBA shows
   m_inflight = {};
-  std::fill(m_sent.begin(), m_sent.end(), uint8_t(0xFF));  // matches nothing, so every tile differs
-  m_cursor = 0;
+  m_front = 0;  // the standby picture is on page 0
+  m_cycle = false;
+  for (auto& s : m_shadow)
+    std::fill(s.begin(), s.end(), uint8_t(0xFF));  // matches nothing, so every tile differs
 }
+
+namespace
+{
+bool TileDiffers(const std::vector<uint8_t>& a, const std::vector<uint8_t>& b, size_t t)
+{
+  const size_t tx = t % ScreenMirror::kTilesX, ty = t / ScreenMirror::kTilesX;
+  for (int r = 0; r < 8; r++)
+  {
+    const size_t off = (ty * 8 + r) * ScreenMirror::kWidth + tx * 8;
+    if (std::memcmp(&a[off], &b[off], 8) != 0)
+      return true;
+  }
+  return false;
+}
+}  // namespace
 
 bool ScreenMirror::NextPacket(std::vector<uint32_t>* words, size_t max_tiles)
 {
@@ -98,9 +117,48 @@ bool ScreenMirror::NextPacket(std::vector<uint32_t>* words, size_t max_tiles)
   if (!m_have_frame)
     return false;
 
-  if (!m_palette_sent)
+  const int back = 1 - m_front;
+  if (!m_cycle)
   {
-    // 256 colours * 2 bytes = 512 bytes = 8 chunks of 64 bytes.
+    // Start drawing a new frame only if it differs from what is on screen. The frame is frozen
+    // so a screen that keeps changing still gets finished and shown.
+    bool differs = !m_palette_sent;
+    for (size_t t = 0; t < size_t(kTiles) && !differs; t++)
+      differs = TileDiffers(m_pending, m_shadow[m_front], t);
+    if (!differs)
+      return false;
+    m_target = m_pending;
+    m_cycle = true;
+  }
+
+  std::vector<size_t> todo;
+  for (size_t t = 0; t < size_t(kTiles); t++)
+  {
+    if (TileDiffers(m_target, m_shadow[back], t))
+      todo.push_back(t);
+  }
+  const size_t take = std::min(todo.size(), max_tiles);
+  const bool last = take == todo.size();  // this packet finishes the frame
+  words->push_back(0);                    // header, filled in below
+  for (size_t i = 0; i < take; i++)
+  {
+    const size_t t = todo[i];
+    const size_t tx = t % kTilesX, ty = t / kTilesX;
+    words->push_back(uint32_t(t));
+    for (int r = 0; r < 8; r++)
+    {
+      const size_t off = (ty * 8 + r) * kWidth + tx * 8;
+      m_inflight.tile_bytes.insert(m_inflight.tile_bytes.end(), &m_target[off], &m_target[off] + 8);
+      words->push_back(Word(&m_target[off]));
+      words->push_back(Word(&m_target[off + 4]));
+    }
+    m_inflight.tile_index.push_back(uint16_t(t));
+  }
+  // The palette goes out together with the flip, so the old picture is never recoloured. It
+  // rides along when it fits (8 chunks), otherwise it gets a packet of its own.
+  const bool with_palette = last && !m_palette_sent && take + 8 <= 16;
+  if (with_palette || (last && !m_palette_sent && take == 0))
+  {
     std::array<uint16_t, 256> pal{};
     for (int i = 0; i < kLevelsR * kLevelsG * kLevelsB; i++)
       pal[i] = PaletteColor(i);
@@ -114,47 +172,22 @@ bool ScreenMirror::NextPacket(std::vector<uint32_t>* words, size_t max_tiles)
       }
     }
     m_inflight.palette = true;
-    return true;
   }
-  size_t found = 0;
-  const size_t start = m_cursor;
-  for (size_t n = 0; n < size_t(kTiles) && found < max_tiles; n++)
-  {
-    const size_t t = (start + n) % kTiles;
-    const size_t tx = t % kTilesX, ty = t / kTilesX;
-    bool differs = false;
-    for (int r = 0; r < 8 && !differs; r++)
-    {
-      const size_t off = (ty * 8 + r) * kWidth + tx * 8;
-      differs = std::memcmp(&m_pending[off], &m_sent[off], 8) != 0;
-    }
-    if (!differs)
-      continue;
-    words->push_back(uint32_t(t));
-    for (int r = 0; r < 8; r++)
-    {
-      const size_t off = (ty * 8 + r) * kWidth + tx * 8;
-      m_inflight.tile_bytes.insert(m_inflight.tile_bytes.end(), &m_pending[off], &m_pending[off] + 8);
-      words->push_back(Word(&m_pending[off]));
-      words->push_back(Word(&m_pending[off + 4]));
-    }
-    m_inflight.tile_index.push_back(uint16_t(t));
-    found++;
-    m_cursor = (t + 1) % kTiles;
-  }
-  return found > 0;
+  // A last packet whose palette did not fit goes out as a tiles-only packet; the next call finds
+  // nothing left to draw and sends the palette and the flip.
+  m_inflight.flip = last && (m_palette_sent || m_inflight.palette);
+  m_inflight.page = back;
+  (*words)[0] = (m_inflight.flip ? kFlagFlip : 0) | (back ? kFlagPage1 : 0);
+  return words->size() > 1 || m_inflight.flip;  // a flip-only packet is just the header
 }
 
 void ScreenMirror::PacketAcked()
 {
   std::lock_guard lock(m_mutex);
   if (m_inflight.palette)
-  {
     m_palette_sent = true;
-    // The real GBA still shows its old picture: every tile needs sending once.
-    std::fill(m_sent.begin(), m_sent.end(), uint8_t(0xFF));
-  }
-  // Record what was packed, not the newest frame: newer frames may have arrived since.
+  // Record what was packed, not the newest frame.
+  auto& shadow = m_shadow[m_inflight.page];
   for (size_t i = 0; i < m_inflight.tile_index.size(); i++)
   {
     const size_t t = m_inflight.tile_index[i];
@@ -162,8 +195,13 @@ void ScreenMirror::PacketAcked()
     for (int r = 0; r < 8; r++)
     {
       const size_t off = (ty * 8 + r) * kWidth + tx * 8;
-      std::memcpy(&m_sent[off], &m_inflight.tile_bytes[i * 64 + r * 8], 8);
+      std::memcpy(&shadow[off], &m_inflight.tile_bytes[i * 64 + r * 8], 8);
     }
+  }
+  if (m_inflight.flip)
+  {
+    m_front = m_inflight.page;
+    m_cycle = false;
   }
   m_inflight = {};
 }
@@ -171,6 +209,15 @@ void ScreenMirror::PacketAcked()
 void ScreenMirror::PacketFailed()
 {
   std::lock_guard lock(m_mutex);
+  // The real GBA may have drawn some of this packet before the answer got lost: forget what
+  // those tiles hold so they are sent again.
+  auto& shadow = m_shadow[m_inflight.page];
+  for (const uint16_t t : m_inflight.tile_index)
+  {
+    const size_t tx = t % kTilesX, ty = t / kTilesX;
+    for (int r = 0; r < 8; r++)
+      std::memset(&shadow[(ty * 8 + r) * kWidth + tx * 8], 0xFF, 8);
+  }
   m_inflight = {};
 }
 }  // namespace GBLink

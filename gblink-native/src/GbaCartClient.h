@@ -58,7 +58,7 @@ public:
   static constexpr size_t kTileWords = 17;
   static constexpr size_t kTilesPerPacket = 16;
   static constexpr uint32_t kPalTileBase = 600;
-  bool SendTiles(const std::vector<uint32_t>& tiles, uint16_t* keys);
+  bool SendTiles(const std::vector<uint32_t>& packet, uint16_t* keys);
   void LeavePadMode();
 
   // OrreLink agent only: cartridge info plus random access to the save (CMD_RANGES).

@@ -491,7 +491,7 @@ static void writeSave(u32 savesize)
 #define TILE_PAL_BASE 600
 #define TILE_COUNT    608
 
-static void applyTiles(const u32 *buf, u32 n)
+static void applyTiles(const u32 *buf, u32 n, u32 vram)
 {
 	u32 t, r;
 	for(t = 0; t < n; t++)
@@ -509,7 +509,7 @@ static void applyTiles(const u32 *buf, u32 n)
 		else
 		{
 			u32 tx = idx % TILES_X, ty = idx / TILES_X;
-			vu32 *dst = (vu32 *)(0x06000000 + (ty * 8) * 240 + tx * 8);
+			vu32 *dst = (vu32 *)(vram + (ty * 8) * 240 + tx * 8);
 			for(r = 0; r < 8; r++)
 			{
 				dst[r * 60]     = w[1 + r * 2];
@@ -534,8 +534,12 @@ static void padLoop(void)
 			return;
 		if((rx & 0xFFFF0000) == M_TILES)
 		{
-			u32 n = rx & 0xFFFF;
-			if(n >= 1 && n <= TILE_MAX_PER_PACKET)
+			/* low byte: tile count; bit 8: show this page afterwards; bit 9: page 1.
+			 * The page being drawn is never the one on screen, so a frame appears whole. */
+			u32 n = rx & 0xFF;
+			u32 flip = rx & 0x100;
+			u32 page1 = rx & 0x200;
+			if(n <= TILE_MAX_PER_PACKET && (n >= 1 || flip))
 			{
 				u32 *buf = (u32 *)save_data;
 				u32 total = n * TILE_WORDS, i, xsum = 0;
@@ -555,8 +559,9 @@ static void padLoop(void)
 				 * reply to this packet before it clocks anything else. */
 				if(ok)
 				{
-					applyTiles(buf, n);
-					REG_DISPCNT = 0x0404; /* Mode 4, BG2 on */
+					applyTiles(buf, n, page1 ? 0x0600A000 : 0x06000000);
+					if(flip)
+						REG_DISPCNT = page1 ? 0x0414 : 0x0404; /* Mode 4, BG2 on, page */
 				}
 				linkXfer(PAD_ACK | ok);
 			}
