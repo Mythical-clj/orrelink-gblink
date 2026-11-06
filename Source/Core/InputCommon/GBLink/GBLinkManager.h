@@ -112,6 +112,7 @@ private:
   Status m_status;
   std::unique_ptr<DumpRequest> m_dump;
   std::atomic<bool> m_cancel_dump{false};
+  std::atomic<bool> m_dump_active{false};
 
   std::atomic<bool> m_controller_enabled{true};
   std::atomic<int> m_port_setting{-2};
