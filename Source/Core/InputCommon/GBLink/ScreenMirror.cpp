@@ -80,6 +80,7 @@ void ScreenMirror::Reset()
 {
   std::lock_guard lock(m_mutex);
   m_palette_sent = false;
+  m_have_frame = false;  // wait for a fresh frame before replacing what the GBA shows
   m_inflight = {};
   std::fill(m_sent.begin(), m_sent.end(), uint8_t(0xFF));  // matches nothing, so every tile differs
   m_cursor = 0;
@@ -91,6 +92,11 @@ bool ScreenMirror::NextPacket(std::vector<uint32_t>* words, size_t max_tiles)
   std::lock_guard lock(m_mutex);
   words->clear();
   m_inflight = {};
+
+  // Nothing is touched until there is a frame to show: sending the palette alone would recolour
+  // whatever the real GBA is displaying (the standby picture has its own palette).
+  if (!m_have_frame)
+    return false;
 
   if (!m_palette_sent)
   {
@@ -110,9 +116,6 @@ bool ScreenMirror::NextPacket(std::vector<uint32_t>* words, size_t max_tiles)
     m_inflight.palette = true;
     return true;
   }
-  if (!m_have_frame)
-    return false;
-
   size_t found = 0;
   const size_t start = m_cursor;
   for (size_t n = 0; n < size_t(kTiles) && found < max_tiles; n++)
