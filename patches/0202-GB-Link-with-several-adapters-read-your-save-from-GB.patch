@@ -1,0 +1,61 @@
+From 9288a32866cb049b8f44301b9245fbce33e1277c Mon Sep 17 00:00:00 2001
+From: t <t@t>
+Date: Fri, 6 Nov 2026 14:17:11 -0600
+Subject: [PATCH] GB-Link: with several adapters, read your save from GB-Link 1
+ and the guest-slot save from GB-Link 2
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01764cASb9aVVk2m6JupRMj5
+---
+ .../DolphinQt/XDNetplay/XDLauncherDialog.cpp  | 27 ++++++++++++++++---
+ 1 file changed, 24 insertions(+), 3 deletions(-)
+
+diff --git a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
+index 3ba2287c5..d2b4da1b0 100644
+--- a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
++++ b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
+@@ -1356,7 +1356,18 @@ void XDLauncherDialog::RefreshGbLinkStatus()
+     }
+     // The cartridge-read adapter list follows the adapters that exist.
+     const bool several = adapters.size() > 1;
+-    m_gblink_read_row->setVisible(several);
++    // With several adapters, "Your save" reads from GB-Link 1 and "Guest-slot save" from
++    // GB-Link 2, so each player keeps their cartridge in their own GBA. The picker row is
++    // therefore no longer shown.
++    m_gblink_read_row->setVisible(false);
++    m_save_row_port2.gblink_button->setToolTip(
++        several ? tr("Reads the cartridge in the GBA connected to GB-Link 1. Power that GBA on "
++                     "holding START + SELECT first.") :
++                  QString());
++    m_save_row_port3.gblink_button->setToolTip(
++        several ? tr("Reads the cartridge in the GBA connected to GB-Link 2. Power that GBA on "
++                     "holding START + SELECT first.") :
++                  QString());
+     if (several && m_gblink_read_combo->count() != static_cast<int>(adapters.size()))
+     {
+       const QString current = m_gblink_read_combo->currentData().toString();
+@@ -1414,9 +1425,19 @@ void XDLauncherDialog::OnImportFromGbLink(int device)
+   label_timer->start(300);
+   connect(progress, &QProgressDialog::canceled, this, [] { GBLink::Manager::Get().CancelDump(); });
+ 
++  // With two or more adapters, GBA port 2's save comes from GB-Link 1 and GBA port 3's from
++  // GB-Link 2. With one adapter the empty key means "the only adapter".
++  std::string read_key;
++  {
++    const auto adapters = GBLink::Manager::Get().GetAdapters();
++    if (adapters.size() > 1)
++    {
++      const size_t want = device == 2 ? 1 : 0;
++      read_key = adapters[std::min(want, adapters.size() - 1)].key;
++    }
++  }
+   const bool queued = GBLink::Manager::Get().RequestDump(
+-      m_gblink_read_row->isVisible() ? m_gblink_read_combo->currentData().toString().toStdString() :
+-                                       std::string(),
++      read_key,
+       [this, device, progress_ptr](GBLink::DumpResult result) {
+         // Runs on the GB-Link thread. Keep a copy of the raw cartridge dump no matter what the
+         // import decides: the cartridge's own save is the one thing we cannot recreate.
+-- 
+2.43.0
+
