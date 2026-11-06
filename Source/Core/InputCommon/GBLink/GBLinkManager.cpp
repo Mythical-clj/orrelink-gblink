@@ -125,7 +125,7 @@ void Link::SetStatus(State state, std::string text)
 bool Link::GetPadKeys(uint16_t* keys) const
 {
   m_query_count++;
-  if (!m_pad_live)
+  if (!m_pad_live || !m_controller_enabled)  // controller off: the GBA only shows the screen
     return false;
   m_query_live++;
   *keys = m_pad_keys;
@@ -135,6 +135,8 @@ bool Link::GetPadKeys(uint16_t* keys) const
 void Link::SetControllerEnabled(bool enabled)
 {
   m_controller_enabled = enabled;
+  if (enabled)
+    m_released = false;
   m_cv.notify_all();
 }
 
@@ -247,6 +249,11 @@ void Link::Run()
   };
 
   // Polls for the GBA's multiboot handshake. True if it is waiting for a program.
+  // The GBA program runs while the controller is on or the screen is being mirrored; the
+  // L+R+Start+Select combo releases it until the controller is turned on again.
+  const auto want_agent = [&] {
+    return (m_controller_enabled || m_owner.IsScreenMirror()) && !m_released;
+  };
   auto last_wait_log = Clock::now();
   uint32_t last_wait_reply = 0;
   const auto gba_is_waiting = [&] {
@@ -433,7 +440,7 @@ void Link::Run()
       }
 
       // ---- controller ------------------------------------------------------------------
-      if (agent_loaded && agent_has_pad && m_controller_enabled)
+      if (agent_loaded && agent_has_pad && want_agent())
       {
         if (!pad_active)
         {
@@ -468,7 +475,9 @@ void Link::Run()
           m_mirror_device = -1;
           mirror_fails = 0;
           bad_polls = 0;
-          SetStatus(State::ControllerActive, "Your GBA is acting as a controller");
+          SetStatus(State::ControllerActive,
+                    m_controller_enabled ? "Your GBA is acting as a controller" :
+                                           "Your GBA is showing the game screen");
         }
         uint16_t keys = 0;
         uint32_t raw = 0;
@@ -510,6 +519,7 @@ void Link::Run()
           {
             // The GBA answers as an idle agent: the player pressed L+R+Start+Select.
             m_controller_enabled = false;
+            m_released = true;
             SetStatus(State::AgentIdle, "GBA controller paused (L+R+Start+Select).");
           }
           else
@@ -540,7 +550,7 @@ void Link::Run()
       // ---- waiting for a GBA -----------------------------------------------------------
       if (!agent_loaded)
       {
-        if (m_controller_enabled)
+        if (want_agent())
         {
           if (gba_is_waiting())
             load_agent();

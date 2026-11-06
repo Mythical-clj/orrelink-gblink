@@ -115,6 +115,7 @@ private:
   std::atomic<bool> m_dump_active{false};
 
   std::atomic<bool> m_controller_enabled{true};
+  std::atomic<bool> m_released{false};  // the player released the GBA with L+R+Start+Select
   std::atomic<int> m_port_setting{-2};
   std::atomic<bool> m_pad_live{false};
   std::atomic<int> m_mirror_device{-1};
