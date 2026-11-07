@@ -74,6 +74,11 @@ const Config::Info<std::string>& ImportedSaveKey(int device)
   return device == 1 ? Config::MAIN_XD_IMPORTED_SAVE_2 : Config::MAIN_XD_IMPORTED_SAVE_3;
 }
 
+const Config::Info<int>& ImportedGameKey(int device)
+{
+  return device == 1 ? Config::MAIN_XD_IMPORTED_GAME_2 : Config::MAIN_XD_IMPORTED_GAME_3;
+}
+
 std::string BaseName(const std::string& path)
 {
   return path.substr(path.find_last_of("/\\") + 1);
@@ -354,6 +359,9 @@ bool ImportUserSave(const std::string& source_path, int device, std::string* sta
   // Display-only record of what was imported; HasImportBackup stays the
   // authoritative signal.
   Config::SetBase(ImportedSaveKey(device), BaseName(source_path));
+  // A save file import is always the ROM's own game; ImportTeamFromPartialSave records a
+  // different source cartridge after this returns.
+  Config::SetBase(ImportedGameKey(device), 0);
   Config::Save();
 
   if (status)
@@ -422,6 +430,7 @@ bool RestoreDefaultSave(int device, std::string* error)
     return false;
 
   Config::SetBase(ImportedSaveKey(device), std::string{});
+  Config::SetBase(ImportedGameKey(device), 0);
   Config::Save();
   return true;
 #endif
@@ -461,7 +470,25 @@ bool ImportTeamFromPartialSave(const std::string& partial_path, const std::strin
   const auto bundle = PartyBundle::Extract(*save, &parse_error);
   if (!bundle)
     return fail(parse_error);
-  return ImportTeamText(PartyBundle::Base64Encode(*bundle), built_path, device, status, error);
+  if (!ImportTeamText(PartyBundle::Base64Encode(*bundle), built_path, device, status, error))
+    return false;
+  // The import is an Emerald rebuild whatever the cartridge was; remember the cartridge so the
+  // trainer on screen matches it.
+  Config::SetBase(ImportedGameKey(device),
+                  game == Gen3Game::FireRedLeafGreen ? 1 : game == Gen3Game::RubySapphire ? 2 : 0);
+  Config::Save();
+  if (status && game != Gen3Game::Emerald)
+  {
+    const int model = CartridgeModelForDevice(device);
+    if (model != 0)
+    {
+      *status += fmt::format("\n\nYour trainer will appear as the {} trainer (read from your {} "
+                             "cartridge).",
+                             model == 0x06 || model == 0x07 ? "FireRed/LeafGreen" : "Ruby/Sapphire",
+                             GameDisplayName(game));
+    }
+  }
+  return true;
 #endif
 }
 
@@ -549,6 +576,37 @@ bool ImportTeamText(const std::string& team_text, const std::string& built_path,
       return fail("could not write " + built_path);
   }
   return ImportUserSave(built_path, device, status, error);
+#endif
+}
+
+int CartridgeModelForDevice(int device)
+{
+#ifndef HAS_LIBMGBA
+  (void)device;
+  return 0;
+#else
+  if (device != 1 && device != 2)
+    return 0;
+  // Only while the import that recorded the cartridge is still the socket's save.
+  if (Config::Get(ImportedSaveKey(device)).empty())
+    return 0;
+  const int game = Config::Get(ImportedGameKey(device));
+  if (game != 1 && game != 2)
+    return 0;
+  const std::string save_path = SavePathForDevice(device);
+  std::vector<u8> bytes;
+  if (save_path.empty() || !ReadFileBytes(save_path, &bytes))
+    return 0;
+  const auto save = EmeraldSave::Create(std::move(bytes));
+  if (!save)
+    return 0;
+  const u32 gender = save->GetTrainerGender();
+  if (gender > 1)
+    return 0;
+  // Male is 0: Red / Brendan; female is 1: Leaf / May.
+  if (game == 1)
+    return gender == 0 ? 0x07 : 0x06;
+  return gender == 0 ? 0x09 : 0x08;
 #endif
 }
 

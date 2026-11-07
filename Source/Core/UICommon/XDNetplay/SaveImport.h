@@ -93,6 +93,13 @@ bool ImportTeamFromPartialSave(const std::string& partial_path, const std::strin
 // untouched forever.
 bool RestoreDefaultSave(int device, std::string* error);
 
+// The GBA player model (BattleCustomizer's ids 0x06 Leaf, 0x07 Red, 0x08 May R/S, 0x09 Brendan R/S)
+// that matches the cartridge whose team was read into socket `device`, or 0 when that team did not
+// come from a FireRed/LeafGreen or Ruby/Sapphire cartridge (an Emerald trainer is already the
+// game default). The netplay save is always an Emerald rebuild, so this is what lets a LeafGreen
+// player appear as Leaf instead of May.
+int CartridgeModelForDevice(int device);
+
 // True when <save>.preimport exists for the socket. This -- not the config
 // key, which is display-only -- is the authoritative "an import happened"
 // signal, so a hand-deleted file cannot desync the UI.

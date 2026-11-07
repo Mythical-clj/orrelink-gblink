@@ -22,6 +22,7 @@
 #include "Core/System.h"
 
 #include "UICommon/XDNetplay/BattleCustomizer.h"
+#include "UICommon/XDNetplay/SaveImport.h"
 #include "UICommon/XDNetplay/FormatRules.h"
 #include "UICommon/XDNetplay/TeamInjector.h"
 
@@ -117,6 +118,8 @@ MultiStartOutcome PrepareMultiStart(NetPlay::NetPlayServer& server,
   BattleCustomizer::SeatLooks looks;
   if (const int own = Config::Get(Config::MAIN_XD_STYLE_HOST_MODEL); own > 0)
     looks[0].model = own;
+  else if (const int cart = SaveImport::CartridgeModelForDevice(1); cart > 0)
+    looks[0].model = cart;
   for (size_t i = 0; i < claim.seats.size(); ++i)
   {
     if (i == 0 && host_fills_seat2)
