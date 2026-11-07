@@ -291,6 +291,10 @@ extern const Info<int> MAIN_XD_TIMER_GAME_MINUTES;
 // (the on-disk .preimport backup), so a hand-deleted file cannot desync the UI.
 extern const Info<std::string> MAIN_XD_IMPORTED_SAVE_2;  // GBA port 2 (device 1)
 extern const Info<std::string> MAIN_XD_IMPORTED_SAVE_3;  // GBA port 3 (device 2)
+// The cartridge game the imported team came from (0 = Emerald/unknown, 1 = FireRed/LeafGreen,
+// 2 = Ruby/Sapphire). The save itself is always rebuilt as Emerald; this only picks the trainer.
+extern const Info<int> MAIN_XD_IMPORTED_GAME_2;
+extern const Info<int> MAIN_XD_IMPORTED_GAME_3;
 
 // Guest Submit Team dialog persistence, so a joiner does not retype the team,
 // name and model every session: prefilled into the dialog on open, stored on

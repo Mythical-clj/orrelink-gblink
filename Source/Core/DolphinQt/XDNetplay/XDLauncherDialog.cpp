@@ -1274,6 +1274,21 @@ void XDLauncherDialog::RefreshSaveSlots()
                     .arg(QString::fromUtf8(
                         XDNetplay::GameDisplayName(XDNetplay::EmeraldSave::DetectGame(*save))))
                     .arg(QString::fromStdString(save->GetTrainerName()));
+        // A team read from a FireRed/LeafGreen or Ruby/Sapphire cartridge is an Emerald rebuild
+        // that still wears its cartridge's trainer in battle.
+        switch (XDNetplay::SaveImport::CartridgeModelForDevice(device))
+        {
+        case 0x06:
+        case 0x07:
+          text += tr(" (read from FireRed/LeafGreen: plays as that trainer)");
+          break;
+        case 0x08:
+        case 0x09:
+          text += tr(" (read from Ruby/Sapphire: plays as that trainer)");
+          break;
+        default:
+          break;
+        }
       }
       else
       {

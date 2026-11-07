@@ -33,6 +33,7 @@
 
 #include "Common/IOFile.h"
 
+#include "UICommon/XDNetplay/SaveImport.h"
 #include "UICommon/XDNetplay/FormatRules.h"
 #include "UICommon/XDNetplay/Gen3Save.h"
 
@@ -1265,7 +1266,11 @@ std::string FormatRuleLines(StartKind kind)
 Selection ConfigSelection()
 {
   Selection sel;
+  // "Game default" means the trainer of the cartridge that was read (Leaf for a LeafGreen save),
+  // since the netplay save itself is always an Emerald rebuild.
   sel.host_model = Config::Get(Config::MAIN_XD_STYLE_HOST_MODEL);
+  if (sel.host_model <= 0)
+    sel.host_model = SaveImport::CartridgeModelForDevice(1);
   sel.guest_model_fallback = Config::Get(Config::MAIN_XD_STYLE_GUEST_MODEL);
   sel.music = Config::Get(Config::MAIN_XD_STYLE_MUSIC);
   sel.venue = Config::Get(Config::MAIN_XD_STYLE_VENUE);
@@ -1446,6 +1451,8 @@ static SeatLooks SoloMultiLooks()
   SeatLooks looks;
   if (const int own = Config::Get(Config::MAIN_XD_STYLE_HOST_MODEL); own > 0)
     looks[0].model = own;
+  else if (const int cart = SaveImport::CartridgeModelForDevice(1); cart > 0)
+    looks[0].model = cart;
   const std::vector<std::string> fields =
       SplitString(Config::Get(Config::MAIN_XD_MULTI_SOLO_MODELS), ',');
   for (size_t i = 0; i < fields.size() && i < 3; ++i)
