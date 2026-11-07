@@ -1,0 +1,271 @@
+From 2db0d5dc962c0e88327a68ea41f61e2f998e41b7 Mon Sep 17 00:00:00 2001
+From: t <t@t>
+Date: Sat, 7 Nov 2026 00:55:12 -0600
+Subject: [PATCH] XD: a team read from a FireRed/LeafGreen or Ruby/Sapphire
+ cartridge plays as that game's trainer
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01764cASb9aVVk2m6JupRMj5
+---
+ Source/Core/Core/Config/MainSettings.cpp      |  2 +
+ Source/Core/Core/Config/MainSettings.h        |  4 ++
+ .../Core/DolphinQt/NetPlay/NetPlayDialog.cpp  |  6 +-
+ .../DolphinQt/XDNetplay/XDLauncherDialog.cpp  | 15 +++++
+ .../UICommon/XDNetplay/BattleCustomizer.cpp   |  7 +++
+ Source/Core/UICommon/XDNetplay/MultiStart.cpp |  3 +
+ Source/Core/UICommon/XDNetplay/SaveImport.cpp | 60 ++++++++++++++++++-
+ Source/Core/UICommon/XDNetplay/SaveImport.h   |  7 +++
+ 8 files changed, 102 insertions(+), 2 deletions(-)
+
+diff --git a/Source/Core/Core/Config/MainSettings.cpp b/Source/Core/Core/Config/MainSettings.cpp
+index ac66e4ea7..5a4374d1b 100644
+--- a/Source/Core/Core/Config/MainSettings.cpp
++++ b/Source/Core/Core/Config/MainSettings.cpp
+@@ -441,6 +441,8 @@ const Info<int> MAIN_XD_TIMER_TURN_SECONDS{{System::Main, "XDNetplay", "TimerTur
+ const Info<int> MAIN_XD_TIMER_GAME_MINUTES{{System::Main, "XDNetplay", "TimerGameMinutes"}, 20};
+ const Info<std::string> MAIN_XD_IMPORTED_SAVE_2{{System::Main, "XDNetplay", "ImportedSave2"}, ""};
+ const Info<std::string> MAIN_XD_IMPORTED_SAVE_3{{System::Main, "XDNetplay", "ImportedSave3"}, ""};
++const Info<int> MAIN_XD_IMPORTED_GAME_2{{System::Main, "XDNetplay", "ImportedGame2"}, 0};
++const Info<int> MAIN_XD_IMPORTED_GAME_3{{System::Main, "XDNetplay", "ImportedGame3"}, 0};
+ const Info<std::string> MAIN_XD_SUBMIT_TEAM_B64{{System::Main, "XDNetplay", "SubmitTeamB64"}, ""};
+ const Info<std::string> MAIN_XD_SUBMIT_NAME{{System::Main, "XDNetplay", "SubmitName"}, ""};
+ const Info<int> MAIN_XD_SUBMIT_MODEL{{System::Main, "XDNetplay", "SubmitModel"}, 0};
+diff --git a/Source/Core/Core/Config/MainSettings.h b/Source/Core/Core/Config/MainSettings.h
+index c335b072a..2ff50632b 100644
+--- a/Source/Core/Core/Config/MainSettings.h
++++ b/Source/Core/Core/Config/MainSettings.h
+@@ -291,6 +291,10 @@ extern const Info<int> MAIN_XD_TIMER_GAME_MINUTES;
+ // (the on-disk .preimport backup), so a hand-deleted file cannot desync the UI.
+ extern const Info<std::string> MAIN_XD_IMPORTED_SAVE_2;  // GBA port 2 (device 1)
+ extern const Info<std::string> MAIN_XD_IMPORTED_SAVE_3;  // GBA port 3 (device 2)
++// The cartridge game the imported team came from (0 = Emerald/unknown, 1 = FireRed/LeafGreen,
++// 2 = Ruby/Sapphire). The save itself is always rebuilt as Emerald; this only picks the trainer.
++extern const Info<int> MAIN_XD_IMPORTED_GAME_2;
++extern const Info<int> MAIN_XD_IMPORTED_GAME_3;
+ 
+ // Guest Submit Team dialog persistence, so a joiner does not retype the team,
+ // name and model every session: prefilled into the dialog on open, stored on
+diff --git a/Source/Core/DolphinQt/NetPlay/NetPlayDialog.cpp b/Source/Core/DolphinQt/NetPlay/NetPlayDialog.cpp
+index 69cfefc62..cb6cd4f8c 100644
+--- a/Source/Core/DolphinQt/NetPlay/NetPlayDialog.cpp
++++ b/Source/Core/DolphinQt/NetPlay/NetPlayDialog.cpp
+@@ -82,6 +82,7 @@
+ #include "UICommon/GameFile.h"
+ #include "UICommon/XDNetplay/BattleCustomizer.h"
+ #include "UICommon/XDNetplay/DisposableSave.h"
++#include "UICommon/XDNetplay/SaveImport.h"
+ #include "UICommon/XDNetplay/FormatRules.h"
+ #include "UICommon/XDNetplay/Gen3Data.h"
+ #include "UICommon/XDNetplay/Gen3Save.h"
+@@ -1807,7 +1808,10 @@ bool NetPlayDialog::SendSaveTeam(bool announce_failures)
+   if (!bundle)
+     return fail(tr("Could not use your save: %1").arg(QString::fromStdString(error)));
+ 
+-  const int model_id = Config::Get(Config::MAIN_XD_SUBMIT_MODEL);
++  // No pick of their own: wear the trainer of the cartridge the team was read from.
++  int model_id = Config::Get(Config::MAIN_XD_SUBMIT_MODEL);
++  if (model_id <= 0)
++    model_id = XDNetplay::SaveImport::CartridgeModelForDevice(1);
+   const std::optional<int> model =
+       model_id > 0 ? std::optional<int>(model_id) : std::nullopt;
+   client->SendTeamSubmission(XDNetplay::BuildBundleSubmissionPayload(*bundle, model, false));
+diff --git a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
+index d2b4da1b0..1c30f5efd 100644
+--- a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
++++ b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
+@@ -1274,6 +1274,21 @@ void XDLauncherDialog::RefreshSaveSlots()
+                     .arg(QString::fromUtf8(
+                         XDNetplay::GameDisplayName(XDNetplay::EmeraldSave::DetectGame(*save))))
+                     .arg(QString::fromStdString(save->GetTrainerName()));
++        // A team read from a FireRed/LeafGreen or Ruby/Sapphire cartridge is an Emerald rebuild
++        // that still wears its cartridge's trainer in battle.
++        switch (XDNetplay::SaveImport::CartridgeModelForDevice(device))
++        {
++        case 0x06:
++        case 0x07:
++          text += tr(" (read from FireRed/LeafGreen: plays as that trainer)");
++          break;
++        case 0x08:
++        case 0x09:
++          text += tr(" (read from Ruby/Sapphire: plays as that trainer)");
++          break;
++        default:
++          break;
++        }
+       }
+       else
+       {
+diff --git a/Source/Core/UICommon/XDNetplay/BattleCustomizer.cpp b/Source/Core/UICommon/XDNetplay/BattleCustomizer.cpp
+index e96cf0869..a5f9e0885 100644
+--- a/Source/Core/UICommon/XDNetplay/BattleCustomizer.cpp
++++ b/Source/Core/UICommon/XDNetplay/BattleCustomizer.cpp
+@@ -33,6 +33,7 @@
+ 
+ #include "Common/IOFile.h"
+ 
++#include "UICommon/XDNetplay/SaveImport.h"
+ #include "UICommon/XDNetplay/FormatRules.h"
+ #include "UICommon/XDNetplay/Gen3Save.h"
+ 
+@@ -1265,7 +1266,11 @@ std::string FormatRuleLines(StartKind kind)
+ Selection ConfigSelection()
+ {
+   Selection sel;
++  // "Game default" means the trainer of the cartridge that was read (Leaf for a LeafGreen save),
++  // since the netplay save itself is always an Emerald rebuild.
+   sel.host_model = Config::Get(Config::MAIN_XD_STYLE_HOST_MODEL);
++  if (sel.host_model <= 0)
++    sel.host_model = SaveImport::CartridgeModelForDevice(1);
+   sel.guest_model_fallback = Config::Get(Config::MAIN_XD_STYLE_GUEST_MODEL);
+   sel.music = Config::Get(Config::MAIN_XD_STYLE_MUSIC);
+   sel.venue = Config::Get(Config::MAIN_XD_STYLE_VENUE);
+@@ -1446,6 +1451,8 @@ static SeatLooks SoloMultiLooks()
+   SeatLooks looks;
+   if (const int own = Config::Get(Config::MAIN_XD_STYLE_HOST_MODEL); own > 0)
+     looks[0].model = own;
++  else if (const int cart = SaveImport::CartridgeModelForDevice(1); cart > 0)
++    looks[0].model = cart;
+   const std::vector<std::string> fields =
+       SplitString(Config::Get(Config::MAIN_XD_MULTI_SOLO_MODELS), ',');
+   for (size_t i = 0; i < fields.size() && i < 3; ++i)
+diff --git a/Source/Core/UICommon/XDNetplay/MultiStart.cpp b/Source/Core/UICommon/XDNetplay/MultiStart.cpp
+index 362df1d73..44d761103 100644
+--- a/Source/Core/UICommon/XDNetplay/MultiStart.cpp
++++ b/Source/Core/UICommon/XDNetplay/MultiStart.cpp
+@@ -22,6 +22,7 @@
+ #include "Core/System.h"
+ 
+ #include "UICommon/XDNetplay/BattleCustomizer.h"
++#include "UICommon/XDNetplay/SaveImport.h"
+ #include "UICommon/XDNetplay/FormatRules.h"
+ #include "UICommon/XDNetplay/TeamInjector.h"
+ 
+@@ -117,6 +118,8 @@ MultiStartOutcome PrepareMultiStart(NetPlay::NetPlayServer& server,
+   BattleCustomizer::SeatLooks looks;
+   if (const int own = Config::Get(Config::MAIN_XD_STYLE_HOST_MODEL); own > 0)
+     looks[0].model = own;
++  else if (const int cart = SaveImport::CartridgeModelForDevice(1); cart > 0)
++    looks[0].model = cart;
+   for (size_t i = 0; i < claim.seats.size(); ++i)
+   {
+     if (i == 0 && host_fills_seat2)
+diff --git a/Source/Core/UICommon/XDNetplay/SaveImport.cpp b/Source/Core/UICommon/XDNetplay/SaveImport.cpp
+index 261082c63..83392d4ba 100644
+--- a/Source/Core/UICommon/XDNetplay/SaveImport.cpp
++++ b/Source/Core/UICommon/XDNetplay/SaveImport.cpp
+@@ -74,6 +74,11 @@ const Config::Info<std::string>& ImportedSaveKey(int device)
+   return device == 1 ? Config::MAIN_XD_IMPORTED_SAVE_2 : Config::MAIN_XD_IMPORTED_SAVE_3;
+ }
+ 
++const Config::Info<int>& ImportedGameKey(int device)
++{
++  return device == 1 ? Config::MAIN_XD_IMPORTED_GAME_2 : Config::MAIN_XD_IMPORTED_GAME_3;
++}
++
+ std::string BaseName(const std::string& path)
+ {
+   return path.substr(path.find_last_of("/\\") + 1);
+@@ -354,6 +359,9 @@ bool ImportUserSave(const std::string& source_path, int device, std::string* sta
+   // Display-only record of what was imported; HasImportBackup stays the
+   // authoritative signal.
+   Config::SetBase(ImportedSaveKey(device), BaseName(source_path));
++  // A save file import is always the ROM's own game; ImportTeamFromPartialSave records a
++  // different source cartridge after this returns.
++  Config::SetBase(ImportedGameKey(device), 0);
+   Config::Save();
+ 
+   if (status)
+@@ -422,6 +430,7 @@ bool RestoreDefaultSave(int device, std::string* error)
+     return false;
+ 
+   Config::SetBase(ImportedSaveKey(device), std::string{});
++  Config::SetBase(ImportedGameKey(device), 0);
+   Config::Save();
+   return true;
+ #endif
+@@ -461,7 +470,25 @@ bool ImportTeamFromPartialSave(const std::string& partial_path, const std::strin
+   const auto bundle = PartyBundle::Extract(*save, &parse_error);
+   if (!bundle)
+     return fail(parse_error);
+-  return ImportTeamText(PartyBundle::Base64Encode(*bundle), built_path, device, status, error);
++  if (!ImportTeamText(PartyBundle::Base64Encode(*bundle), built_path, device, status, error))
++    return false;
++  // The import is an Emerald rebuild whatever the cartridge was; remember the cartridge so the
++  // trainer on screen matches it.
++  Config::SetBase(ImportedGameKey(device),
++                  game == Gen3Game::FireRedLeafGreen ? 1 : game == Gen3Game::RubySapphire ? 2 : 0);
++  Config::Save();
++  if (status && game != Gen3Game::Emerald)
++  {
++    const int model = CartridgeModelForDevice(device);
++    if (model != 0)
++    {
++      *status += fmt::format("\n\nYour trainer will appear as the {} trainer (read from your {} "
++                             "cartridge).",
++                             model == 0x06 || model == 0x07 ? "FireRed/LeafGreen" : "Ruby/Sapphire",
++                             GameDisplayName(game));
++    }
++  }
++  return true;
+ #endif
+ }
+ 
+@@ -552,6 +579,37 @@ bool ImportTeamText(const std::string& team_text, const std::string& built_path,
+ #endif
+ }
+ 
++int CartridgeModelForDevice(int device)
++{
++#ifndef HAS_LIBMGBA
++  (void)device;
++  return 0;
++#else
++  if (device != 1 && device != 2)
++    return 0;
++  // Only while the import that recorded the cartridge is still the socket's save.
++  if (Config::Get(ImportedSaveKey(device)).empty())
++    return 0;
++  const int game = Config::Get(ImportedGameKey(device));
++  if (game != 1 && game != 2)
++    return 0;
++  const std::string save_path = SavePathForDevice(device);
++  std::vector<u8> bytes;
++  if (save_path.empty() || !ReadFileBytes(save_path, &bytes))
++    return 0;
++  const auto save = EmeraldSave::Create(std::move(bytes));
++  if (!save)
++    return 0;
++  const u32 gender = save->GetTrainerGender();
++  if (gender > 1)
++    return 0;
++  // Male is 0: Red / Brendan; female is 1: Leaf / May.
++  if (game == 1)
++    return gender == 0 ? 0x07 : 0x06;
++  return gender == 0 ? 0x09 : 0x08;
++#endif
++}
++
+ bool HasImportBackup(int device)
+ {
+ #ifndef HAS_LIBMGBA
+diff --git a/Source/Core/UICommon/XDNetplay/SaveImport.h b/Source/Core/UICommon/XDNetplay/SaveImport.h
+index 01c515a7d..bbf10de8a 100644
+--- a/Source/Core/UICommon/XDNetplay/SaveImport.h
++++ b/Source/Core/UICommon/XDNetplay/SaveImport.h
+@@ -93,6 +93,13 @@ bool ImportTeamFromPartialSave(const std::string& partial_path, const std::strin
+ // untouched forever.
+ bool RestoreDefaultSave(int device, std::string* error);
+ 
++// The GBA player model (BattleCustomizer's ids 0x06 Leaf, 0x07 Red, 0x08 May R/S, 0x09 Brendan R/S)
++// that matches the cartridge whose team was read into socket `device`, or 0 when that team did not
++// come from a FireRed/LeafGreen or Ruby/Sapphire cartridge (an Emerald trainer is already the
++// game default). The netplay save is always an Emerald rebuild, so this is what lets a LeafGreen
++// player appear as Leaf instead of May.
++int CartridgeModelForDevice(int device);
++
+ // True when <save>.preimport exists for the socket. This -- not the config
+ // key, which is display-only -- is the authoritative "an import happened"
+ // signal, so a hand-deleted file cannot desync the UI.
+-- 
+2.43.0
+
