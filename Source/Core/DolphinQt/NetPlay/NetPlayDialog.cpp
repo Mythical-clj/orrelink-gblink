@@ -82,6 +82,7 @@
 #include "UICommon/GameFile.h"
 #include "UICommon/XDNetplay/BattleCustomizer.h"
 #include "UICommon/XDNetplay/DisposableSave.h"
+#include "UICommon/XDNetplay/SaveImport.h"
 #include "UICommon/XDNetplay/FormatRules.h"
 #include "UICommon/XDNetplay/Gen3Data.h"
 #include "UICommon/XDNetplay/Gen3Save.h"
@@ -1807,7 +1808,10 @@ bool NetPlayDialog::SendSaveTeam(bool announce_failures)
   if (!bundle)
     return fail(tr("Could not use your save: %1").arg(QString::fromStdString(error)));
 
-  const int model_id = Config::Get(Config::MAIN_XD_SUBMIT_MODEL);
+  // No pick of their own: wear the trainer of the cartridge the team was read from.
+  int model_id = Config::Get(Config::MAIN_XD_SUBMIT_MODEL);
+  if (model_id <= 0)
+    model_id = XDNetplay::SaveImport::CartridgeModelForDevice(1);
   const std::optional<int> model =
       model_id > 0 ? std::optional<int>(model_id) : std::nullopt;
   client->SendTeamSubmission(XDNetplay::BuildBundleSubmissionPayload(*bundle, model, false));

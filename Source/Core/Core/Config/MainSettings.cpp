@@ -441,6 +441,8 @@ const Info<int> MAIN_XD_TIMER_TURN_SECONDS{{System::Main, "XDNetplay", "TimerTur
 const Info<int> MAIN_XD_TIMER_GAME_MINUTES{{System::Main, "XDNetplay", "TimerGameMinutes"}, 20};
 const Info<std::string> MAIN_XD_IMPORTED_SAVE_2{{System::Main, "XDNetplay", "ImportedSave2"}, ""};
 const Info<std::string> MAIN_XD_IMPORTED_SAVE_3{{System::Main, "XDNetplay", "ImportedSave3"}, ""};
+const Info<int> MAIN_XD_IMPORTED_GAME_2{{System::Main, "XDNetplay", "ImportedGame2"}, 0};
+const Info<int> MAIN_XD_IMPORTED_GAME_3{{System::Main, "XDNetplay", "ImportedGame3"}, 0};
 const Info<std::string> MAIN_XD_SUBMIT_TEAM_B64{{System::Main, "XDNetplay", "SubmitTeamB64"}, ""};
 const Info<std::string> MAIN_XD_SUBMIT_NAME{{System::Main, "XDNetplay", "SubmitName"}, ""};
 const Info<int> MAIN_XD_SUBMIT_MODEL{{System::Main, "XDNetplay", "SubmitModel"}, 0};
