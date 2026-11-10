@@ -167,6 +167,11 @@ if(NOT ANDROID)
     GBLink/UsbLink.cpp
     GBLink/UsbLink.h
   )
+  # These two report errors with exceptions; Dolphin builds the rest with -fno-exceptions.
+  if(NOT MSVC)
+    set_source_files_properties(GBLink/GbaCartClient.cpp GBLink/GBLinkManager.cpp
+      PROPERTIES COMPILE_OPTIONS -fexceptions)
+  endif()
 endif()
 
 if(LIBEVDEV_FOUND AND LIBUDEV_FOUND)
