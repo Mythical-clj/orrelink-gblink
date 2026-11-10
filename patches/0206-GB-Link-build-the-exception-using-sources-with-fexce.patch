@@ -1,0 +1,31 @@
+From 9fd6118105c4c51ec34309a2e4e84d4a5f08b64e Mon Sep 17 00:00:00 2001
+From: t <t@t>
+Date: Tue, 10 Nov 2026 11:45:19 -0600
+Subject: [PATCH] GB-Link: build the exception-using sources with -fexceptions
+ on macOS/Linux
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01764cASb9aVVk2m6JupRMj5
+---
+ Source/Core/InputCommon/CMakeLists.txt | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/Source/Core/InputCommon/CMakeLists.txt b/Source/Core/InputCommon/CMakeLists.txt
+index 4754dd2b9..a0942e8fa 100644
+--- a/Source/Core/InputCommon/CMakeLists.txt
++++ b/Source/Core/InputCommon/CMakeLists.txt
+@@ -167,6 +167,11 @@ if(NOT ANDROID)
+     GBLink/UsbLink.cpp
+     GBLink/UsbLink.h
+   )
++  # These two report errors with exceptions; Dolphin builds the rest with -fno-exceptions.
++  if(NOT MSVC)
++    set_source_files_properties(GBLink/GbaCartClient.cpp GBLink/GBLinkManager.cpp
++      PROPERTIES COMPILE_OPTIONS -fexceptions)
++  endif()
+ endif()
+ 
+ if(LIBEVDEV_FOUND AND LIBUDEV_FOUND)
+-- 
+2.43.0
+
