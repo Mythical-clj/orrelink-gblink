@@ -1,0 +1,427 @@
+From 71a70d77c9b3d63b0d0b43f0a570a9b8c2aed495 Mon Sep 17 00:00:00 2001
+From: t <t@t>
+Date: Tue, 10 Nov 2026 11:26:02 -0600
+Subject: [PATCH] GB-Link: short UI text; macOS/Linux USB handling (skip reset
+ on macOS, udev hint)
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01764cASb9aVVk2m6JupRMj5
+---
+ .../DolphinQt/XDNetplay/XDLauncherDialog.cpp  | 87 +++++++------------
+ .../Core/InputCommon/GBLink/GBLinkManager.cpp | 45 +++++-----
+ Source/Core/InputCommon/GBLink/UsbLink.cpp    | 18 +++-
+ Source/Core/UICommon/XDNetplay/SaveImport.cpp |  5 +-
+ 4 files changed, 66 insertions(+), 89 deletions(-)
+
+diff --git a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
+index 1c30f5efd..e2dedc7ac 100644
+--- a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
++++ b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
+@@ -424,27 +424,18 @@ void XDLauncherDialog::CreateMainLayout()
+   // DisposableSave swaps in for the room's duration.
+   // GB-Link: a real GBA plugged into this PC. Plays as the controller (no setup beyond
+   // powering the GBA on with START+SELECT held) and can hand over its cartridge save.
+-  auto* gblink_box = new QGroupBox(tr("Real GBA (GB-Link adapter)"));
++  auto* gblink_box = new QGroupBox(tr("Real GBA"));
+   auto* gblink_layout = new QGridLayout;
+   m_gblink_status = MakeNoteLabel(QString());
+-  m_gblink_full_read_check = new QCheckBox(tr("Read the whole save (slower)"));
++  m_gblink_full_read_check = new QCheckBox(tr("Read full save"));
+   m_gblink_full_read_check->setChecked(false);
+-  m_gblink_full_read_check->setToolTip(
+-      tr("By default only your trainer info and team are read from the cartridge, which is much "
+-         "faster. Tick this to read and import the entire save instead."));
+-  m_gblink_menu_check = new QCheckBox(tr("Also use my real GBA for XD menus (port 1)"));
++    m_gblink_full_read_check->setToolTip(tr("Slower"));
++  m_gblink_menu_check = new QCheckBox(tr("GBA controls menus"));
+   m_gblink_menu_check->setChecked(false);
+-  m_gblink_menu_check->setToolTip(
+-      tr("The real GBA's buttons also act as the GameCube pad on port 1, so you can move through "
+-         "XD's menus with it. Turn this off during link battles, where the GBA plays the "
+-         "emulated Emerald instead."));
+-  m_gblink_pad_check = new QCheckBox(tr("Use my real GBA as the controller"));
++    m_gblink_menu_check->setToolTip(tr("Port 1 menus"));
++  m_gblink_pad_check = new QCheckBox(tr("GBA as controller"));
+   m_gblink_pad_check->setChecked(true);
+-  m_gblink_pad_check->setToolTip(
+-      tr("Plug in the GB-Link, connect your GBA with the link cable, and power the GBA on while "
+-         "holding START + SELECT (the cartridge can stay in). OrreLink sends the GBA a small "
+-         "program and its buttons then play XD. Hold L + R + Start + Select for 2 seconds to "
+-         "release it."));
++    m_gblink_pad_check->setToolTip(tr("Power on holding START+SELECT"));
+   gblink_layout->addWidget(m_gblink_status, 0, 0);
+   // Several adapters: each says which GBA port it plays, and one is picked for cartridge reads.
+   auto* adapters_layout = new QVBoxLayout;
+@@ -455,17 +446,14 @@ void XDLauncherDialog::CreateMainLayout()
+     ad.widget = new QWidget;
+     auto* row_layout = new QHBoxLayout(ad.widget);
+     row_layout->setContentsMargins(0, 0, 0, 0);
+-    ad.label = new QLabel(tr("GB-Link %1 plays:").arg(i + 1));
++    ad.label = new QLabel(tr("GB-Link %1:").arg(i + 1));
+     ad.port_combo = new QComboBox;
+-    ad.port_combo->addItem(tr("Automatic"), -2);
+-    ad.port_combo->addItem(tr("Every GBA port"), 0);
++    ad.port_combo->addItem(tr("Auto"), -2);
++    ad.port_combo->addItem(tr("All ports"), 0);
+     for (int port = 1; port <= 4; port++)
+-      ad.port_combo->addItem(tr("GBA port %1").arg(port), port);
+-    ad.port_combo->addItem(tr("Not used"), -1);
+-    ad.port_combo->setToolTip(
+-        tr("Which emulated GBA this adapter and its GBA control. Automatic: a single adapter "
+-           "plays every GBA port; with several, the first plays port 1, the second port 2, and so "
+-           "on. Pick a port yourself if a battle puts a local player on a different one."));
++      ad.port_combo->addItem(tr("Port %1").arg(port), port);
++    ad.port_combo->addItem(tr("Off"), -1);
++        ad.port_combo->setToolTip(tr("GBA port"));
+     row_layout->addWidget(ad.label);
+     row_layout->addWidget(ad.port_combo, 1);
+     ad.widget->setVisible(false);
+@@ -486,11 +474,9 @@ void XDLauncherDialog::CreateMainLayout()
+   {
+     auto* read_layout = new QHBoxLayout(m_gblink_read_row);
+     read_layout->setContentsMargins(0, 0, 0, 0);
+-    read_layout->addWidget(new QLabel(tr("Read cartridges with:")));
++    read_layout->addWidget(new QLabel(tr("Read with:")));
+     m_gblink_read_combo = new QComboBox;
+-    m_gblink_read_combo->setToolTip(
+-        tr("Which adapter the \"From GBA cartridge\" buttons use. Put that adapter's GBA at "
+-           "the multiboot screen (power on holding START + SELECT) first."));
++        m_gblink_read_combo->setToolTip(tr("Adapter for reads"));
+     read_layout->addWidget(m_gblink_read_combo, 1);
+   }
+   m_gblink_read_row->setVisible(false);
+@@ -498,12 +484,9 @@ void XDLauncherDialog::CreateMainLayout()
+   gblink_layout->addLayout(adapters_layout, 5, 0);
+   gblink_layout->addWidget(m_gblink_pad_check, 1, 0);
+   gblink_layout->addWidget(m_gblink_menu_check, 2, 0);
+-  m_gblink_mirror_check = new QCheckBox(tr("Show my GBA's battle screen on my real GBA"));
++  m_gblink_mirror_check = new QCheckBox(tr("Mirror GBA screen"));
+   m_gblink_mirror_check->setChecked(true);
+-  m_gblink_mirror_check->setToolTip(
+-      tr("The emulated GBA's screen (your move menu in a link battle) is drawn on the real GBA. "
+-         "It is sent in small pieces, so big scene changes take a few seconds to fill in. Turn "
+-         "this off if buttons ever feel laggy."));
++    m_gblink_mirror_check->setToolTip(tr("Show game on GBA"));
+   gblink_layout->addWidget(m_gblink_mirror_check, 3, 0);
+   gblink_layout->addWidget(m_gblink_full_read_check, 4, 0);
+   gblink_layout->setColumnStretch(0, 1);
+@@ -512,24 +495,16 @@ void XDLauncherDialog::CreateMainLayout()
+ 
+   auto* saves_box = new QGroupBox(tr("Save Files"));
+   auto* saves_layout = new QGridLayout;
+-  auto* saves_caption = MakeNoteLabel(
+-      tr("Solo play uses an imported save exactly as it is. Hosting a netplay room does NOT "
+-         "share the file: the session runs on a rebuilt save carrying only your party and "
+-         "trainer identity, and your own save returns when the room closes. When you join "
+-         "someone else's room, use Submit Team instead."));
++  auto* saves_caption = MakeNoteLabel(tr("Hosting shares your team only."));
+   saves_layout->addWidget(saves_caption, 0, 0, 1, 5);
+   int save_row = 1;
+   const auto add_save_row = [&](SaveSlotRow* target, const QString& label) {
+     target->state = MakeNoteLabel(QString());
+-    target->import_button = new NonDefaultQPushButton(tr("Import my save..."));
+-    target->gblink_button = new NonDefaultQPushButton(tr("From GBA cartridge..."));
+-    target->gblink_button->setToolTip(
+-        tr("Reads the save from the cartridge in your real GBA through the GB-Link adapter "
+-           "(read-only; a backup copy is kept), then imports it like Import my save."));
++    target->import_button = new NonDefaultQPushButton(tr("Import save..."));
++    target->gblink_button = new NonDefaultQPushButton(tr("Read cartridge..."));
++        target->gblink_button->setToolTip(tr("Read GBA cartridge"));
+     target->restore_button = new NonDefaultQPushButton(tr("Restore default"));
+-    target->restore_button->setToolTip(
+-        tr("Puts the bundled team-editor save back. The replaced save is kept next to it as a "
+-           ".bak file."));
++        target->restore_button->setToolTip(tr("Default save"));
+     saves_layout->addWidget(new QLabel(label), save_row, 0);
+     saves_layout->addWidget(target->state, save_row, 1);
+     saves_layout->addWidget(target->import_button, save_row, 2);
+@@ -1376,12 +1351,10 @@ void XDLauncherDialog::RefreshGbLinkStatus()
+     // therefore no longer shown.
+     m_gblink_read_row->setVisible(false);
+     m_save_row_port2.gblink_button->setToolTip(
+-        several ? tr("Reads the cartridge in the GBA connected to GB-Link 1. Power that GBA on "
+-                     "holding START + SELECT first.") :
++        several ? tr("Uses GB-Link 1") :
+                   QString());
+     m_save_row_port3.gblink_button->setToolTip(
+-        several ? tr("Reads the cartridge in the GBA connected to GB-Link 2. Power that GBA on "
+-                     "holding START + SELECT first.") :
++        several ? tr("Uses GB-Link 2") :
+                   QString());
+     if (several && m_gblink_read_combo->count() != static_cast<int>(adapters.size()))
+     {
+@@ -1408,7 +1381,7 @@ void XDLauncherDialog::RefreshGbLinkStatus()
+   m_save_row_port2.gblink_button->setEnabled(!busy);
+   m_save_row_port3.gblink_button->setEnabled(!busy);
+ #else
+-  m_gblink_status->setText(tr("GB-Link support is not available in this build."));
++  m_gblink_status->setText(tr("GB-Link unavailable"));
+   m_gblink_pad_check->setEnabled(false);
+   m_gblink_menu_check->setEnabled(false);
+   m_gblink_mirror_check->setEnabled(false);
+@@ -1499,8 +1472,7 @@ void XDLauncherDialog::OnImportFromGbLink(int device)
+           {
+             ModalMessageBox::warning(
+                 this, tr("OrreLink"),
+-                tr("The save was read from the cartridge (%1) but could not be imported:\n\n%2\n\n"
+-                   "A copy is kept at %3")
++                tr("Import failed (%1):\n\n%2\n\nBackup: %3")
+                     .arg(QString::fromStdString(dump.title), QString::fromStdString(error),
+                          QString::fromStdString(backup_path)));
+           }
+@@ -1515,8 +1487,7 @@ void XDLauncherDialog::OnImportFromGbLink(int device)
+             }
+             ModalMessageBox::information(
+                 this, tr("OrreLink"),
+-                tr("Read the save from %1.\n\n%2\n\nA backup copy of the raw cartridge save is "
+-                   "kept at %3")
++                tr("Read %1.\n\n%2\n\nBackup: %3")
+                     .arg(QString::fromStdString(dump.title), QString::fromStdString(status),
+                          QString::fromStdString(backup_path)));
+           }
+@@ -1535,12 +1506,12 @@ void XDLauncherDialog::OnImportFromGbLink(int device)
+   {
+     progress->close();
+     ModalMessageBox::warning(this, tr("OrreLink"),
+-                             tr("GB-Link is busy or not running. Try again in a moment."));
++                             tr("GB-Link busy"));
+   }
+ #else
+   (void)device;
+   ModalMessageBox::warning(this, tr("OrreLink"),
+-                           tr("GB-Link support is not available in this build."));
++                           tr("GB-Link unavailable"));
+ #endif
+ }
+ 
+diff --git a/Source/Core/InputCommon/GBLink/GBLinkManager.cpp b/Source/Core/InputCommon/GBLink/GBLinkManager.cpp
+index 86e27519f..ce29bd732 100644
+--- a/Source/Core/InputCommon/GBLink/GBLinkManager.cpp
++++ b/Source/Core/InputCommon/GBLink/GBLinkManager.cpp
+@@ -227,18 +227,18 @@ void Link::Run()
+     if (!agent_has_pad)
+       data = DumperPayload(&size);
+     const std::vector<uint8_t> payload(data, data + size);
+-    SetStatus(State::LoadingAgent, "Sending the OrreLink program to your GBA...");
++    SetStatus(State::LoadingAgent, "Loading GBA...");
+     std::string err;
+     if (!Multiboot(usb, payload, &err, log_fn, 5))
+     {
+-      SetStatus(State::Error, "Could not load the GBA program: " + err);
++      SetStatus(State::Error, "GBA load failed: " + err);
+       return false;
+     }
+     cart = std::make_unique<GbaCartClient>(usb, log_fn);
+     cart->SetExternalCancel(&m_cancel_dump);
+     if (!cart->Ping(15000))
+     {
+-      SetStatus(State::Error, "The GBA program did not answer after loading.");
++      SetStatus(State::Error, "GBA not responding");
+       cart.reset();
+       return false;
+     }
+@@ -286,13 +286,13 @@ void Link::Run()
+           r.error = "This GB-Link adapter is not available. Plug it in (and close the Cart Doctor browser tab).";
+           req->done(std::move(r));
+         }
+-        SetStatus(State::NoAdapter, "GB-Link adapter not available");
++        SetStatus(State::NoAdapter, "No adapter");
+         WaitFor(1000);
+         continue;
+       }
+       if (!usb.IsNewFirmware())
+       {
+-        SetStatus(State::Error, "This adapter has old firmware. Update it at launcher.gblink.io.");
++        SetStatus(State::Error, "Old firmware: launcher.gblink.io");
+         usb.Close();
+         WaitFor(3000);
+         continue;
+@@ -307,7 +307,7 @@ void Link::Run()
+       usb.DrainData();
+       agent_loaded = false;
+       pad_active = false;
+-      SetStatus(State::WaitingForGba, "GB-Link connected. Waiting for your GBA...");
++      SetStatus(State::WaitingForGba, "Waiting for GBA");
+     }
+ 
+     try
+@@ -323,7 +323,7 @@ void Link::Run()
+           if (!agent_loaded)
+           {
+             SetStatus(State::WaitingForGba,
+-                      "Power on your GBA now while holding START + SELECT (cartridge can stay in).");
++                      "Hold START+SELECT, power on GBA");
+             const auto deadline = Clock::now() + std::chrono::seconds(kDumpWaitForGbaSeconds);
+             bool ok = false;
+             while (!quitting() && !m_cancel_dump && Clock::now() < deadline)
+@@ -340,8 +340,7 @@ void Link::Run()
+               if (m_cancel_dump)
+                 throw GbaCartError("cancelled", "Cancelled");
+               throw GbaCartError("timeout",
+-                                 "The GBA never showed up. Power it on holding START + SELECT, "
+-                                 "check the cable (small plug in the adapter), then try again.");
++                                 "GBA not found. Hold START+SELECT at power-on and check the cable.");
+             }
+           }
+           else if (pad_active)
+@@ -351,7 +350,7 @@ void Link::Run()
+             pad_active = false;
+           }
+ 
+-          SetStatus(State::ReadingCart, "Reading your cartridge...");
++          SetStatus(State::ReadingCart, "Reading cartridge");
+           CartInfo info;
+           const auto cart_deadline = Clock::now() + std::chrono::seconds(kDumpWaitForCartSeconds);
+           const bool try_team = req->team_only && agent_has_pad;
+@@ -361,14 +360,14 @@ void Link::Run()
+             if (!info.no_cart)
+               break;
+             SetStatus(State::ReadingCart,
+-                      "No cartridge detected. Insert your cartridge into the GBA (leave it on).");
++                      "No cartridge found");
+             if (quitting() || m_cancel_dump || Clock::now() > cart_deadline)
+-              throw GbaCartError("no-cart", "No cartridge was detected in the GBA.");
++              throw GbaCartError("no-cart", "No cartridge found");
+             WaitFor(2000);
+           }
+           result.title = info.title;
+           result.code = info.code;
+-          SetStatus(State::ReadingCart, "Reading the save from " + info.title + "...");
++          SetStatus(State::ReadingCart, "Reading " + info.title);
+           int last_pct = -1;
+           const auto report = [&](size_t done, size_t total) {
+             const int pct = static_cast<int>(done * 100 / total);
+@@ -413,7 +412,7 @@ void Link::Run()
+             }
+             cart->EndRanges();
+             if (!have_save)
+-              throw GbaCartError("no-save", "This cartridge has no save data.");
++              throw GbaCartError("no-save", "No save data");
+           }
+           else
+           {
+@@ -431,7 +430,7 @@ void Link::Run()
+         if (usb.Lost())
+           drop_adapter();
+         else
+-          SetStatus(State::AgentIdle, result.ok ? "Cartridge read." : result.error);
++          SetStatus(State::AgentIdle, result.ok ? "Cartridge read" : result.error);
+         m_dump_active = false;
+         m_cancel_dump = false;
+         if (req->done)
+@@ -476,8 +475,7 @@ void Link::Run()
+           mirror_fails = 0;
+           bad_polls = 0;
+           SetStatus(State::ControllerActive,
+-                    m_controller_enabled ? "Your GBA is acting as a controller" :
+-                                           "Your GBA is showing the game screen");
++                    m_controller_enabled ? "Controller on" : "Screen only");
+         }
+         uint16_t keys = 0;
+         uint32_t raw = 0;
+@@ -520,12 +518,12 @@ void Link::Run()
+             // The GBA answers as an idle agent: the player pressed L+R+Start+Select.
+             m_controller_enabled = false;
+             m_released = true;
+-            SetStatus(State::AgentIdle, "GBA controller paused (L+R+Start+Select).");
++            SetStatus(State::AgentIdle, "Controller released");
+           }
+           else
+           {
+             agent_loaded = false;
+-            SetStatus(State::WaitingForGba, "Lost the GBA. Power it on holding START + SELECT.");
++            SetStatus(State::WaitingForGba, "GBA lost: hold START+SELECT");
+           }
+         }
+         if (Clock::now() - stat_time >= std::chrono::seconds(5))
+@@ -566,8 +564,7 @@ void Link::Run()
+                                   last_wait_reply));
+             }
+             SetStatus(State::WaitingForGba,
+-                      "GB-Link connected. Power on your GBA holding START + SELECT "
+-                      "(no cartridge needed) to use it as a controller.");
++                      "Hold START+SELECT, power on GBA");
+           }
+           if (usb.Lost())
+             drop_adapter();
+@@ -576,14 +573,14 @@ void Link::Run()
+         }
+         else
+         {
+-          SetStatus(State::WaitingForGba, "GB-Link connected (GBA controller is off).");
++          SetStatus(State::WaitingForGba, "Connected, controller off");
+           WaitFor(500);
+         }
+         continue;
+       }
+ 
+       // Agent running but nothing to do (controller off): idle without touching the link.
+-      SetStatus(State::AgentIdle, "GBA program is running. Controller is off.");
++      SetStatus(State::AgentIdle, "Controller off");
+       WaitFor(250);
+     }
+     catch (const GbaCartError& e)
+@@ -591,7 +588,7 @@ void Link::Run()
+       m_pad_live = false;
+       pad_active = false;
+       agent_loaded = false;
+-      SetStatus(State::WaitingForGba, std::string("GBA link problem: ") + e.what());
++      SetStatus(State::WaitingForGba, std::string("Link problem: ") + e.what());
+       if (usb.Lost())
+         drop_adapter();
+       WaitFor(500);
+diff --git a/Source/Core/InputCommon/GBLink/UsbLink.cpp b/Source/Core/InputCommon/GBLink/UsbLink.cpp
+index cd179bdc0..43dd85572 100644
+--- a/Source/Core/InputCommon/GBLink/UsbLink.cpp
++++ b/Source/Core/InputCommon/GBLink/UsbLink.cpp
+@@ -148,16 +148,28 @@ bool UsbLink::Open(std::string* error, uint8_t bus, uint8_t address)
+   if (orc != 0)
+   {
+     m_handle = nullptr;
+-    return fail(std::string("libusb_open failed: ") + libusb_error_name(orc) +
+-                " (on Windows the adapter must be bound to the WinUSB driver)");
++    std::string hint;
++#if defined(_WIN32)
++    hint = " (the adapter must use the WinUSB driver)";
++#elif defined(__linux__)
++    if (orc == LIBUSB_ERROR_ACCESS)
++      hint = " (no USB permission: install the GB-Link udev rule, or run as root)";
++#elif defined(__APPLE__)
++    if (orc == LIBUSB_ERROR_ACCESS)
++      hint = " (macOS refused USB access; unplug and replug the adapter)";
++#endif
++    return fail(std::string("libusb_open failed: ") + libusb_error_name(orc) + hint);
+   }
+   m_info.product = StrDesc(m_handle, fd.iProduct);
+   m_info.manufacturer = StrDesc(m_handle, fd.iManufacturer);
+   m_info.serial = StrDesc(m_handle, fd.iSerialNumber);
+   m_new_firmware = m_info.IsNewFirmware();
+ 
+-  // The browser client resets the device first; do the same, ignoring failure.
++  // The browser client resets the device first; do the same, ignoring failure. macOS re-enumerates
++  // the device on a reset and invalidates the handle, so it is skipped there.
++#if !defined(__APPLE__)
+   libusb_reset_device(m_handle);
++#endif
+ 
+   int rc = libusb_set_configuration(m_handle, 1);
+   if (rc != 0 && rc != LIBUSB_ERROR_BUSY && rc != LIBUSB_ERROR_NOT_SUPPORTED)
+diff --git a/Source/Core/UICommon/XDNetplay/SaveImport.cpp b/Source/Core/UICommon/XDNetplay/SaveImport.cpp
+index 83392d4ba..6d4de1ccf 100644
+--- a/Source/Core/UICommon/XDNetplay/SaveImport.cpp
++++ b/Source/Core/UICommon/XDNetplay/SaveImport.cpp
+@@ -482,10 +482,7 @@ bool ImportTeamFromPartialSave(const std::string& partial_path, const std::strin
+     const int model = CartridgeModelForDevice(device);
+     if (model != 0)
+     {
+-      *status += fmt::format("\n\nYour trainer will appear as the {} trainer (read from your {} "
+-                             "cartridge).",
+-                             model == 0x06 || model == 0x07 ? "FireRed/LeafGreen" : "Ruby/Sapphire",
+-                             GameDisplayName(game));
++      *status += fmt::format("\n\nPlays as {} trainer.", GameDisplayName(game));
+     }
+   }
+   return true;
+-- 
+2.43.0
+

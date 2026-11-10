@@ -287,7 +287,7 @@ jobs:
     # same prepare/reconstruct as the Android APK in the same run -- release the
     # macOS .app and the APK from one workflow_dispatch as a matched pair.
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_macos }}
-    needs: prepare
+    needs: [prepare, gba-agent]
     # macos-15 (Xcode 16 / Apple clang 16). macos-14's Apple clang 15 lacks
     # C++20 parenthesized aggregate initialization (P0960), which Dolphin's
     # HookableEvent relies on -- it fails to compile ControllerInterface.cpp.
@@ -299,6 +299,23 @@ jobs:
           ref: ${{ needs.prepare.outputs.sha }}
           submodules: recursive
           fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          name: orrelink-agent-gba
+          path: agent
+      - name: Embed the GBA agent
+        # Replaces the placeholder AgentPayloadData.cpp with the freshly built program bytes.
+        run: |
+          python3 - <<'PY'
+          data = open('agent/orrelink-agent_mb.gba', 'rb').read()
+          rows = ['    ' + ','.join('0x%02x' % b for b in data[i:i + 16]) + ',' for i in range(0, len(data), 16)]
+          src = ('#include <cstddef>\n\nnamespace GBLink::Data\n{\n'
+                 'extern const unsigned char kAgentPayload[];\nextern const size_t kAgentPayloadSize;\n'
+                 'const unsigned char kAgentPayload[] = {\n' + '\n'.join(rows) + '\n};\n'
+                 'const size_t kAgentPayloadSize = sizeof(kAgentPayload);\n}  // namespace GBLink::Data\n')
+          open('Source/Core/InputCommon/GBLink/AgentPayloadData.cpp', 'w').write(src)
+          print('embedded', len(data), 'bytes')
+          PY
       - name: Install deps
         # Qt6 + Ninja only. Deliberately NO ffmpeg: linking Homebrew's ffmpeg
         # would make the .app depend on dylibs the tester doesn't have (frame
@@ -406,7 +423,7 @@ jobs:
     # Same prepare/reconstruct as the others in the same run -- release as a
     # matched set or netplay's build-hash gate keeps platforms apart.
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_linux }}
-    needs: prepare
+    needs: [prepare, gba-agent]
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
@@ -415,6 +432,23 @@ jobs:
           ref: ${{ needs.prepare.outputs.sha }}
           submodules: recursive
           fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          name: orrelink-agent-gba
+          path: agent
+      - name: Embed the GBA agent
+        # Replaces the placeholder AgentPayloadData.cpp with the freshly built program bytes.
+        run: |
+          python3 - <<'PY'
+          data = open('agent/orrelink-agent_mb.gba', 'rb').read()
+          rows = ['    ' + ','.join('0x%02x' % b for b in data[i:i + 16]) + ',' for i in range(0, len(data), 16)]
+          src = ('#include <cstddef>\n\nnamespace GBLink::Data\n{\n'
+                 'extern const unsigned char kAgentPayload[];\nextern const size_t kAgentPayloadSize;\n'
+                 'const unsigned char kAgentPayload[] = {\n' + '\n'.join(rows) + '\n};\n'
+                 'const size_t kAgentPayloadSize = sizeof(kAgentPayload);\n}  // namespace GBLink::Data\n')
+          open('Source/Core/InputCommon/GBLink/AgentPayloadData.cpp', 'w').write(src)
+          print('embedded', len(data), 'bytes')
+          PY
       - name: Install dependencies
         run: |
           sudo apt-get update
@@ -485,6 +519,12 @@ jobs:
             --output appimage
           mkdir -p out
           mv OrreLink*.AppImage out/ 2>/dev/null || mv *.AppImage out/
+          # Lets a normal user open the GB-Link adapter: copy to /etc/udev/rules.d/, then replug.
+          cat > out/51-gblink.rules <<'RULES'
+          SUBSYSTEM=="usb", ATTRS{idVendor}=="2fe3", TAG+="uaccess"
+          SUBSYSTEM=="usb", ATTRS{idVendor}=="cafe", TAG+="uaccess"
+          SUBSYSTEM=="usb", ATTRS{idVendor}=="239a", TAG+="uaccess"
+          RULES
           ls -la out
       - uses: actions/upload-artifact@v4
         with:
