@@ -9,6 +9,10 @@ on:
         description: "Also build the Windows desktop client"
         type: boolean
         default: false
+      build_android:
+        description: "Also build the Android APK (debug-signed unless signing secrets exist)"
+        type: boolean
+        default: false
       build_macos:
         description: "Also build the macOS (arm64) desktop client"
         type: boolean
@@ -70,9 +74,10 @@ jobs:
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
   android:
-    # Disabled on the gblink-dev fork: needs signing secrets this fork does not have.
-    if: ${{ false }}
-    needs: prepare
+    # Without signing secrets the APK is signed with the runner's throwaway debug key: fine for
+    # testing, but each build then needs the previous one uninstalled first.
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_android }}
+    needs: [prepare, gba-agent]
     runs-on: ubuntu-latest
     timeout-minutes: 150
     steps:
@@ -81,6 +86,23 @@ jobs:
           ref: ${{ needs.prepare.outputs.sha }}
           submodules: recursive
           fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          name: orrelink-agent-gba
+          path: agent
+      - name: Embed the GBA agent
+        # Replaces the placeholder AgentPayloadData.cpp with the freshly built program bytes.
+        run: |
+          python3 - <<'PY'
+          data = open('agent/orrelink-agent_mb.gba', 'rb').read()
+          rows = ['    ' + ','.join('0x%02x' % b for b in data[i:i + 16]) + ',' for i in range(0, len(data), 16)]
+          src = ('#include <cstddef>\n\nnamespace GBLink::Data\n{\n'
+                 'extern const unsigned char kAgentPayload[];\nextern const size_t kAgentPayloadSize;\n'
+                 'const unsigned char kAgentPayload[] = {\n' + '\n'.join(rows) + '\n};\n'
+                 'const size_t kAgentPayloadSize = sizeof(kAgentPayload);\n}  // namespace GBLink::Data\n')
+          open('Source/Core/InputCommon/GBLink/AgentPayloadData.cpp', 'w').write(src)
+          print('embedded', len(data), 'bytes')
+          PY
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -104,8 +126,9 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "${KEYSTORE_B64:-}" ]; then
-            echo "::error::ANDROID_KEYSTORE_B64 is not set; refusing to ship an unsignable APK."
-            exit 1
+            echo "::warning::ANDROID_KEYSTORE_B64 is not set; building with the throwaway debug key."
+            echo "keystore=" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
           printf '%s' "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.p12"
           # Fail here, in seconds, rather than after the native build: an unreadable keystore is
@@ -119,13 +142,18 @@ jobs:
           KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
         run: |
-          ./gradlew assembleDebug --no-daemon \
-            -Pkeystore="${{ steps.signing.outputs.keystore }}" \
-            -Pstorepass="$KEYSTORE_PASSWORD" \
-            -Pkeyalias="$KEY_ALIAS" \
-            -Pkeypass="$KEYSTORE_PASSWORD" \
-            -Pstoretype=PKCS12
+          if [ -z "${{ steps.signing.outputs.keystore }}" ]; then
+            ./gradlew assembleDebug --no-daemon
+          else
+            ./gradlew assembleDebug --no-daemon \
+              -Pkeystore="${{ steps.signing.outputs.keystore }}" \
+              -Pstorepass="$KEYSTORE_PASSWORD" \
+              -Pkeyalias="$KEY_ALIAS" \
+              -Pkeypass="$KEYSTORE_PASSWORD" \
+              -Pstoretype=PKCS12
+          fi
       - name: Confirm the APK carries the expected signature
+        if: ${{ steps.signing.outputs.keystore != '' }}
         env:
           EXPECTED_SIGNER: ${{ vars.ANDROID_SIGNER_SHA256 }}
         run: |
