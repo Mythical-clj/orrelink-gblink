@@ -3,10 +3,46 @@
 #include <algorithm>
 #include <cstdio>
 
+#ifdef ANDROID
+#include "jni/AndroidCommon/IDCache.h"
+#else
 #include <libusb.h>
+#endif
 
 namespace GBLink
 {
+#ifdef ANDROID
+namespace
+{
+// Same values libusb uses, so the result handling below is shared.
+constexpr int LIBUSB_ERROR_IO = -1;
+constexpr int LIBUSB_ERROR_NO_DEVICE = -4;
+constexpr int LIBUSB_ERROR_TIMEOUT = -7;
+constexpr int LIBUSB_ERROR_PIPE = -9;
+const char* libusb_error_name(int)
+{
+  return "USB error";
+}
+
+jclass s_usb_class = nullptr;
+jmethodID s_list = nullptr, s_open = nullptr, s_bulk = nullptr, s_close = nullptr;
+// Not a real handle: UsbLink only tests m_handle for "open".
+libusb_device_handle* const kOpenMarker = reinterpret_cast<libusb_device_handle*>(1);
+}  // namespace
+
+namespace AndroidBridge
+{
+void Init(JNIEnv* env, jclass usb_class)
+{
+  s_usb_class = static_cast<jclass>(env->NewGlobalRef(usb_class));
+  s_list = env->GetStaticMethodID(s_usb_class, "list", "()[Ljava/lang/String;");
+  s_open = env->GetStaticMethodID(s_usb_class, "open", "(Ljava/lang/String;)[I");
+  s_bulk = env->GetStaticMethodID(s_usb_class, "bulk", "(Ljava/lang/String;I[BII)I");
+  s_close = env->GetStaticMethodID(s_usb_class, "close", "(Ljava/lang/String;)V");
+}
+}  // namespace AndroidBridge
+#endif
+
 namespace
 {
 constexpr uint16_t kVids[] = {0x2FE3, 0xCAFE, 0x239A};
@@ -16,6 +52,7 @@ bool IsGbLinkVid(uint16_t vid)
   return std::find(std::begin(kVids), std::end(kVids), vid) != std::end(kVids);
 }
 
+#ifndef ANDROID
 std::string StrDesc(libusb_device_handle* h, uint8_t idx)
 {
   if (!h || idx == 0)
@@ -24,6 +61,7 @@ std::string StrDesc(libusb_device_handle* h, uint8_t idx)
   const int n = libusb_get_string_descriptor_ascii(h, idx, buf, sizeof(buf));
   return n > 0 ? std::string(reinterpret_cast<char*>(buf), n) : std::string{};
 }
+#endif
 }  // namespace
 
 std::string Hex(const uint8_t* data, size_t len, size_t max)
@@ -42,6 +80,169 @@ std::string Hex(const uint8_t* data, size_t len, size_t max)
   return s;
 }
 
+#ifdef ANDROID
+UsbLink::UsbLink() = default;
+
+UsbLink::~UsbLink()
+{
+  Close();
+}
+
+namespace
+{
+std::string JString(JNIEnv* env, jobject o)
+{
+  const char* c = env->GetStringUTFChars(static_cast<jstring>(o), nullptr);
+  std::string out = c ? c : "";
+  if (c)
+    env->ReleaseStringUTFChars(static_cast<jstring>(o), c);
+  return out;
+}
+
+// "/dev/bus/usb/001/004" -> bus 1, address 4
+bool ParseDeviceName(const std::string& name, int* bus, int* address)
+{
+  return std::sscanf(name.c_str(), "/dev/bus/usb/%d/%d", bus, address) == 2;
+}
+}  // namespace
+
+std::vector<DeviceInfo> UsbLink::List(std::string* error)
+{
+  std::vector<DeviceInfo> out;
+  JNIEnv* env = IDCache::GetEnvForThread();
+  if (!env || !s_usb_class)
+  {
+    if (error)
+      *error = "USB not ready";
+    return out;
+  }
+  auto* arr = static_cast<jobjectArray>(env->CallStaticObjectMethod(s_usb_class, s_list));
+  if (!arr)
+    return out;
+  const jsize n = env->GetArrayLength(arr);
+  for (jsize i = 0; i < n; i++)
+  {
+    jobject js = env->GetObjectArrayElement(arr, i);
+    // name|vid|pid|bcd|product
+    const std::string line = JString(env, js);
+    env->DeleteLocalRef(js);
+    std::vector<std::string> f;
+    size_t start = 0;
+    for (size_t p; (p = line.find('|', start)) != std::string::npos; start = p + 1)
+      f.push_back(line.substr(start, p - start));
+    f.push_back(line.substr(start));
+    int bus = 0, address = 0;
+    if (f.size() < 5 || !ParseDeviceName(f[0], &bus, &address))
+      continue;
+    DeviceInfo info;
+    info.vid = static_cast<uint16_t>(std::stoi(f[1]));
+    info.pid = static_cast<uint16_t>(std::stoi(f[2]));
+    info.bcd = static_cast<uint16_t>(std::stoi(f[3]));
+    info.bus = static_cast<uint8_t>(bus);
+    info.address = static_cast<uint8_t>(address);
+    info.port_path = std::to_string(address);
+    info.product = f[4];
+    out.push_back(std::move(info));
+  }
+  env->DeleteLocalRef(arr);
+  return out;
+}
+
+bool UsbLink::Open(std::string* error, uint8_t bus, uint8_t address)
+{
+  const auto fail = [&](const std::string& m) {
+    if (error)
+      *error = m;
+    Close();
+    return false;
+  };
+  JNIEnv* env = IDCache::GetEnvForThread();
+  if (!env || !s_usb_class)
+    return fail("USB not ready");
+  const auto devices = List(error);
+  const DeviceInfo* found = nullptr;
+  for (const auto& d : devices)
+  {
+    if (bus && (d.bus != bus || d.address != address))
+      continue;
+    found = &d;
+    break;
+  }
+  if (!found)
+    return fail("no GB-Link adapter found (is USB permission granted?)");
+  char name[64];
+  std::snprintf(name, sizeof(name), "/dev/bus/usb/%03d/%03d", found->bus, found->address);
+  jstring key = env->NewStringUTF(name);
+  auto* info = static_cast<jintArray>(env->CallStaticObjectMethod(s_usb_class, s_open, key));
+  env->DeleteLocalRef(key);
+  if (!info)
+    return fail("could not open the adapter");
+  jint v[8] = {};
+  env->GetIntArrayRegion(info, 0, 8, v);
+  env->DeleteLocalRef(info);
+  m_info = *found;
+  m_new_firmware = m_info.IsNewFirmware();
+  m_interface = v[0];
+  m_ep_cmd_out = static_cast<uint8_t>(v[1]);
+  m_ep_cmd_in = static_cast<uint8_t>(v[2]);
+  m_ep_out = static_cast<uint8_t>(v[3]);
+  m_ep_in = static_cast<uint8_t>(v[4]);
+  m_android_key = name;
+  m_handle = kOpenMarker;
+  if (m_log)
+  {
+    char b[200];
+    std::snprintf(b, sizeof(b),
+                  "opened %04x:%04x bcd=%04x iface=%d ep cmd out/in=%02x/%02x data out/in=%02x/%02x",
+                  m_info.vid, m_info.pid, m_info.bcd, m_interface, m_ep_cmd_out, m_ep_cmd_in,
+                  m_ep_out, m_ep_in);
+    m_log(b);
+  }
+  return true;
+}
+
+void UsbLink::Close()
+{
+  if (m_handle)
+  {
+    if (JNIEnv* env = IDCache::GetEnvForThread(); env && s_usb_class)
+    {
+      jstring key = env->NewStringUTF(m_android_key.c_str());
+      env->CallStaticVoidMethod(s_usb_class, s_close, key);
+      env->DeleteLocalRef(key);
+    }
+    m_handle = nullptr;
+  }
+  m_interface = -1;
+  m_lost = false;
+}
+
+int UsbLink::BulkXfer(uint8_t ep, uint8_t* data, int len, int* done, int timeout_ms)
+{
+  *done = 0;
+  JNIEnv* env = IDCache::GetEnvForThread();
+  if (!env || !s_usb_class)
+    return LIBUSB_ERROR_NO_DEVICE;
+  jstring key = env->NewStringUTF(m_android_key.c_str());
+  jbyteArray buf = env->NewByteArray(len);
+  if (!(ep & 0x80))
+    env->SetByteArrayRegion(buf, 0, len, reinterpret_cast<const jbyte*>(data));
+  const int n = env->CallStaticIntMethod(s_usb_class, s_bulk, key, static_cast<jint>(ep), buf,
+                                         static_cast<jint>(len), static_cast<jint>(timeout_ms));
+  if ((ep & 0x80) && n > 0)
+    env->GetByteArrayRegion(buf, 0, n, reinterpret_cast<jbyte*>(data));
+  env->DeleteLocalRef(buf);
+  env->DeleteLocalRef(key);
+  if (n >= 0)
+  {
+    *done = n;
+    // A read that returned nothing in time is a timeout, as with libusb.
+    return (n == 0 && (ep & 0x80)) ? LIBUSB_ERROR_TIMEOUT : 0;
+  }
+  return n == -2 ? LIBUSB_ERROR_NO_DEVICE : LIBUSB_ERROR_TIMEOUT;
+}
+
+#else
 UsbLink::UsbLink()
 {
   if (libusb_init(&m_ctx) != 0)
@@ -256,6 +457,12 @@ void UsbLink::Close()
   m_lost = false;
 }
 
+int UsbLink::BulkXfer(uint8_t ep, uint8_t* data, int len, int* done, int timeout_ms)
+{
+  return libusb_bulk_transfer(m_handle, ep, data, len, done, timeout_ms);
+}
+#endif  // ANDROID
+
 void UsbLink::NoteResult(int rc)
 {
   if (rc == LIBUSB_ERROR_NO_DEVICE || rc == LIBUSB_ERROR_IO || rc == LIBUSB_ERROR_PIPE)
@@ -275,8 +482,8 @@ bool UsbLink::SendCommand(const std::vector<uint8_t>& bytes)
     return false;
   const uint8_t ep = (m_new_firmware && m_ep_cmd_out) ? m_ep_cmd_out : m_ep_out;
   int sent = 0;
-  const int rc = libusb_bulk_transfer(m_handle, ep, const_cast<uint8_t*>(bytes.data()),
-                                      static_cast<int>(bytes.size()), &sent, 2000);
+  const int rc = BulkXfer(ep, const_cast<uint8_t*>(bytes.data()), static_cast<int>(bytes.size()),
+                          &sent, 2000);
   NoteResult(rc);
   Trace("CMD  >", bytes.data(), bytes.size());
   return rc == 0 && sent == static_cast<int>(bytes.size());
@@ -287,8 +494,7 @@ bool UsbLink::WriteBytes(const uint8_t* data, size_t len)
   if (!m_handle)
     return false;
   int sent = 0;
-  const int rc = libusb_bulk_transfer(m_handle, m_ep_out, const_cast<uint8_t*>(data),
-                                      static_cast<int>(len), &sent, 2000);
+  const int rc = BulkXfer(m_ep_out, const_cast<uint8_t*>(data), static_cast<int>(len), &sent, 2000);
   NoteResult(rc);
   Trace("DATA >", data, len);
   return rc == 0 && sent == static_cast<int>(len);
@@ -299,8 +505,7 @@ size_t UsbLink::ReadBytes(uint8_t* out, size_t max_len, int timeout_ms)
   if (!m_handle)
     return 0;
   int got = 0;
-  const int rc = libusb_bulk_transfer(m_handle, m_ep_in, out, static_cast<int>(max_len), &got,
-                                      timeout_ms);
+  const int rc = BulkXfer(m_ep_in, out, static_cast<int>(max_len), &got, timeout_ms);
   NoteResult(rc);
   if (rc != 0 && rc != LIBUSB_ERROR_TIMEOUT)
     Trace((std::string("DATA < error ") + libusb_error_name(rc)).c_str(), nullptr, 0);
@@ -314,7 +519,7 @@ size_t UsbLink::ReadStatus(uint8_t* out, size_t max_len, int timeout_ms)
   if (!m_handle || !m_new_firmware || !m_ep_cmd_in)
     return 0;
   int got = 0;
-  libusb_bulk_transfer(m_handle, m_ep_cmd_in, out, static_cast<int>(max_len), &got, timeout_ms);
+  BulkXfer(m_ep_cmd_in, out, static_cast<int>(max_len), &got, timeout_ms);
   if (got > 0)
     Trace("STAT <", out, got);
   return got > 0 ? static_cast<size_t>(got) : 0;

@@ -29,6 +29,9 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import kotlinx.coroutines.delay
+import org.dolphinemu.dolphinemu.features.xdnetplay.GBLinkBridge
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.foundation.text.KeyboardOptions
@@ -164,6 +167,8 @@ fun XDLauncherScreen(
                     onImport = onImportSave,
                     onRestore = onRestoreDefaultSave
                 )
+                Spacer(Modifier.height(12.dp))
+                GbLinkCard()
                 Spacer(Modifier.height(24.dp))
 
                 FilledTonalButton(
@@ -785,4 +790,51 @@ private fun SavedTeamsDialog(onClose: () -> Unit) {
         },
         confirmButton = { TextButton(onClick = onClose) { Text("Close") } }
     )
+}
+
+/** Real GBA through a GB-Link adapter (USB). Status refreshes while the screen is open. */
+@Composable
+private fun GbLinkCard() {
+    var status by remember { mutableStateOf(GBLinkBridge.getStatus()) }
+    var controller by remember { mutableStateOf(GBLinkBridge.isControllerEnabled()) }
+    var mirror by remember { mutableStateOf(GBLinkBridge.isScreenMirror()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            status = GBLinkBridge.getStatus()
+            delay(500)
+        }
+    }
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text("Real GBA", style = MaterialTheme.typography.titleMedium)
+            Text(
+                text = status.ifEmpty { "No adapter" },
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("GBA as controller", modifier = Modifier.weight(1f))
+                Switch(checked = controller, onCheckedChange = {
+                    controller = it
+                    GBLinkBridge.setControllerEnabled(it)
+                })
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Mirror GBA screen", modifier = Modifier.weight(1f))
+                Switch(checked = mirror, onCheckedChange = {
+                    mirror = it
+                    GBLinkBridge.setScreenMirror(it)
+                })
+            }
+        }
+    }
 }

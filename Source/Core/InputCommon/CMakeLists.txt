@@ -147,7 +147,11 @@ endif()
 
 if(NOT ANDROID)
   target_link_libraries(inputcommon PUBLIC LibUSB::LibUSB)
-  # GB-Link: native USB client for a real GBA (controller + cartridge save dump).
+endif()
+
+# GB-Link: native USB client for a real GBA (controller + cartridge save dump). Android reaches
+# the adapter through Kotlin's UsbManager instead of libusb (see UsbLink.cpp).
+if(TRUE)
   target_sources(inputcommon PRIVATE
     GBLink/AgentPayloadData.cpp
     GBLink/DumperPayloadData.cpp

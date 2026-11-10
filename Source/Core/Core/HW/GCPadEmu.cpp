@@ -17,7 +17,7 @@
 #include "InputCommon/ControllerEmu/StickGate.h"
 #include "InputCommon/GCPadStatus.h"
 
-#if defined(__LIBUSB__) && !defined(ANDROID)
+#if defined(__LIBUSB__) || defined(ANDROID)
 #include "InputCommon/GBLink/GBLinkManager.h"
 #endif
 
@@ -145,7 +145,7 @@ GCPadStatus GCPad::GetInput() const
   const auto lock = GetStateLock();
   GCPadStatus pad = {};
 
-#if defined(__LIBUSB__) && !defined(ANDROID)
+#if defined(__LIBUSB__) || defined(ANDROID)
   // Optional: the real GBA (through GB-Link) can navigate menus as port 1's pad. Its key bits
   // are in GBA order: A, B, Select, Start, Right, Left, Up, Down, R, L.
   u16 gba_buttons = 0;
@@ -207,7 +207,7 @@ GCPadStatus GCPad::GetInput() const
   pad.triggerLeft = MapFloat<u8>(triggers[0], 0);
   pad.triggerRight = MapFloat<u8>(triggers[1], 0);
 
-#if defined(__LIBUSB__) && !defined(ANDROID)
+#if defined(__LIBUSB__) || defined(ANDROID)
   if (gba_buttons)
   {
     pad.button |= gba_buttons;

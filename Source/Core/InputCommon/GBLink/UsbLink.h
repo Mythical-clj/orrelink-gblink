@@ -10,6 +10,10 @@
 #include <string>
 #include <vector>
 
+#ifdef ANDROID
+#include <jni.h>
+#endif
+
 struct libusb_context;
 struct libusb_device_handle;
 
@@ -98,8 +102,20 @@ private:
   bool m_trace = false;
   bool m_lost = false;
   void NoteResult(int libusb_rc);
+  // One bulk transfer on either backend (libusb, or the Java connection on Android).
+  int BulkXfer(uint8_t ep, uint8_t* data, int len, int* done, int timeout_ms);
+  std::string m_android_key;  // Android only: the UsbManager device name
   LogFn m_log;
 };
 
 std::string Hex(const uint8_t* data, size_t len, size_t max = 64);
+
+#ifdef ANDROID
+// Android has no libusb here: the Kotlin class GBLinkUsb owns the UsbManager connection and this
+// module calls into it. Init is called once from Java with that class.
+namespace AndroidBridge
+{
+void Init(JNIEnv* env, jclass usb_class);
+}
+#endif
 }  // namespace GBLink
