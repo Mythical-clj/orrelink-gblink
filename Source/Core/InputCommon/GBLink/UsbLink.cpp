@@ -148,16 +148,28 @@ bool UsbLink::Open(std::string* error, uint8_t bus, uint8_t address)
   if (orc != 0)
   {
     m_handle = nullptr;
-    return fail(std::string("libusb_open failed: ") + libusb_error_name(orc) +
-                " (on Windows the adapter must be bound to the WinUSB driver)");
+    std::string hint;
+#if defined(_WIN32)
+    hint = " (the adapter must use the WinUSB driver)";
+#elif defined(__linux__)
+    if (orc == LIBUSB_ERROR_ACCESS)
+      hint = " (no USB permission: install the GB-Link udev rule, or run as root)";
+#elif defined(__APPLE__)
+    if (orc == LIBUSB_ERROR_ACCESS)
+      hint = " (macOS refused USB access; unplug and replug the adapter)";
+#endif
+    return fail(std::string("libusb_open failed: ") + libusb_error_name(orc) + hint);
   }
   m_info.product = StrDesc(m_handle, fd.iProduct);
   m_info.manufacturer = StrDesc(m_handle, fd.iManufacturer);
   m_info.serial = StrDesc(m_handle, fd.iSerialNumber);
   m_new_firmware = m_info.IsNewFirmware();
 
-  // The browser client resets the device first; do the same, ignoring failure.
+  // The browser client resets the device first; do the same, ignoring failure. macOS re-enumerates
+  // the device on a reset and invalidates the handle, so it is skipped there.
+#if !defined(__APPLE__)
   libusb_reset_device(m_handle);
+#endif
 
   int rc = libusb_set_configuration(m_handle, 1);
   if (rc != 0 && rc != LIBUSB_ERROR_BUSY && rc != LIBUSB_ERROR_NOT_SUPPORTED)
