@@ -23,6 +23,7 @@ class DolphinApplication : Application() {
         val usbManager = getSystemService(USB_SERVICE) as UsbManager
         GCAdapter.manager = usbManager
         WiimoteAdapter.manager = usbManager
+        org.dolphinemu.dolphinemu.utils.GBLinkUsb.init()
 
         if (DirectoryInitialization.shouldStart(applicationContext)) {
             DirectoryInitialization.start(applicationContext)

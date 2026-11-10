@@ -12,6 +12,7 @@ add_library(main SHARED
   Config/PostProcessing.cpp
   GBA/AndroidGBAHost.cpp
   GBA/AndroidGBAHost.h
+  GBLink/GBLinkJni.cpp
   GameList/GameFile.cpp
   GameList/GameFile.h
   GameList/GameFileCache.cpp

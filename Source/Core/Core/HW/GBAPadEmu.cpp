@@ -10,7 +10,7 @@
 #include "InputCommon/ControllerEmu/ControlGroup/Buttons.h"
 #include "InputCommon/GCPadStatus.h"
 
-#if defined(__LIBUSB__) && !defined(ANDROID)
+#if defined(__LIBUSB__) || defined(ANDROID)
 #include "InputCommon/GBLink/GBLinkManager.h"
 #endif
 
@@ -77,7 +77,7 @@ GCPadStatus GBAPad::GetInput()
   // DPad
   m_dpad->GetState(&pad.button, dpad_bitmasks, m_input_override_function);
 
-#if defined(__LIBUSB__) && !defined(ANDROID)
+#if defined(__LIBUSB__) || defined(ANDROID)
   // A real GBA connected through a GB-Link adapter counts as this GBA's controller. Its key
   // bits are already in GBA order: A, B, Select, Start, Right, Left, Up, Down, R, L.
   {
