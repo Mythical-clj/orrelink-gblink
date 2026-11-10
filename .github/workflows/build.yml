@@ -9,6 +9,18 @@ on:
         description: "Also build the Windows desktop client"
         type: boolean
         default: false
+      publish_run_id:
+        description: "Publish: run id whose artifact becomes a pre-release (leave empty to build)"
+        type: string
+        default: ""
+      publish_artifact:
+        description: "Publish: artifact name, e.g. dolphin-xd-netplay-macos"
+        type: string
+        default: ""
+      publish_tag:
+        description: "Publish: release tag, e.g. mac-test-1"
+        type: string
+        default: ""
       build_android:
         description: "Also build the Android APK (debug-signed unless signing secrets exist)"
         type: boolean
@@ -564,3 +576,29 @@ jobs:
         with:
           name: dolphin-xd-netplay-linux
           path: out/
+
+  publish:
+    # Copies an earlier run's artifact into a GitHub pre-release so testers can download it
+    # without a GitHub login.
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_tag != '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: Download the artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir dl
+          gh run download "${{ inputs.publish_run_id }}" -R "${{ github.repository }}" -n "${{ inputs.publish_artifact }}" -D dl
+          ls -laR dl
+      - name: Create the pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          (cd dl && zip -qr "../${{ inputs.publish_artifact }}.zip" .)
+          gh release create "${{ inputs.publish_tag }}" "${{ inputs.publish_artifact }}.zip" \
+            -R "${{ github.repository }}" --target "${{ github.sha }}" --prerelease \
+            --title "${{ inputs.publish_tag }}" \
+            --notes "Test build (run ${{ inputs.publish_run_id }}). Not signed or notarized."
