@@ -482,10 +482,7 @@ bool ImportTeamFromPartialSave(const std::string& partial_path, const std::strin
     const int model = CartridgeModelForDevice(device);
     if (model != 0)
     {
-      *status += fmt::format("\n\nYour trainer will appear as the {} trainer (read from your {} "
-                             "cartridge).",
-                             model == 0x06 || model == 0x07 ? "FireRed/LeafGreen" : "Ruby/Sapphire",
-                             GameDisplayName(game));
+      *status += fmt::format("\n\nPlays as {} trainer.", GameDisplayName(game));
     }
   }
   return true;

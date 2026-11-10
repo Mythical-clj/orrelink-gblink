@@ -227,18 +227,18 @@ void Link::Run()
     if (!agent_has_pad)
       data = DumperPayload(&size);
     const std::vector<uint8_t> payload(data, data + size);
-    SetStatus(State::LoadingAgent, "Sending the OrreLink program to your GBA...");
+    SetStatus(State::LoadingAgent, "Loading GBA...");
     std::string err;
     if (!Multiboot(usb, payload, &err, log_fn, 5))
     {
-      SetStatus(State::Error, "Could not load the GBA program: " + err);
+      SetStatus(State::Error, "GBA load failed: " + err);
       return false;
     }
     cart = std::make_unique<GbaCartClient>(usb, log_fn);
     cart->SetExternalCancel(&m_cancel_dump);
     if (!cart->Ping(15000))
     {
-      SetStatus(State::Error, "The GBA program did not answer after loading.");
+      SetStatus(State::Error, "GBA not responding");
       cart.reset();
       return false;
     }
@@ -286,13 +286,13 @@ void Link::Run()
           r.error = "This GB-Link adapter is not available. Plug it in (and close the Cart Doctor browser tab).";
           req->done(std::move(r));
         }
-        SetStatus(State::NoAdapter, "GB-Link adapter not available");
+        SetStatus(State::NoAdapter, "No adapter");
         WaitFor(1000);
         continue;
       }
       if (!usb.IsNewFirmware())
       {
-        SetStatus(State::Error, "This adapter has old firmware. Update it at launcher.gblink.io.");
+        SetStatus(State::Error, "Old firmware: launcher.gblink.io");
         usb.Close();
         WaitFor(3000);
         continue;
@@ -307,7 +307,7 @@ void Link::Run()
       usb.DrainData();
       agent_loaded = false;
       pad_active = false;
-      SetStatus(State::WaitingForGba, "GB-Link connected. Waiting for your GBA...");
+      SetStatus(State::WaitingForGba, "Waiting for GBA");
     }
 
     try
@@ -323,7 +323,7 @@ void Link::Run()
           if (!agent_loaded)
           {
             SetStatus(State::WaitingForGba,
-                      "Power on your GBA now while holding START + SELECT (cartridge can stay in).");
+                      "Hold START+SELECT, power on GBA");
             const auto deadline = Clock::now() + std::chrono::seconds(kDumpWaitForGbaSeconds);
             bool ok = false;
             while (!quitting() && !m_cancel_dump && Clock::now() < deadline)
@@ -340,8 +340,7 @@ void Link::Run()
               if (m_cancel_dump)
                 throw GbaCartError("cancelled", "Cancelled");
               throw GbaCartError("timeout",
-                                 "The GBA never showed up. Power it on holding START + SELECT, "
-                                 "check the cable (small plug in the adapter), then try again.");
+                                 "GBA not found. Hold START+SELECT at power-on and check the cable.");
             }
           }
           else if (pad_active)
@@ -351,7 +350,7 @@ void Link::Run()
             pad_active = false;
           }
 
-          SetStatus(State::ReadingCart, "Reading your cartridge...");
+          SetStatus(State::ReadingCart, "Reading cartridge");
           CartInfo info;
           const auto cart_deadline = Clock::now() + std::chrono::seconds(kDumpWaitForCartSeconds);
           const bool try_team = req->team_only && agent_has_pad;
@@ -361,14 +360,14 @@ void Link::Run()
             if (!info.no_cart)
               break;
             SetStatus(State::ReadingCart,
-                      "No cartridge detected. Insert your cartridge into the GBA (leave it on).");
+                      "No cartridge found");
             if (quitting() || m_cancel_dump || Clock::now() > cart_deadline)
-              throw GbaCartError("no-cart", "No cartridge was detected in the GBA.");
+              throw GbaCartError("no-cart", "No cartridge found");
             WaitFor(2000);
           }
           result.title = info.title;
           result.code = info.code;
-          SetStatus(State::ReadingCart, "Reading the save from " + info.title + "...");
+          SetStatus(State::ReadingCart, "Reading " + info.title);
           int last_pct = -1;
           const auto report = [&](size_t done, size_t total) {
             const int pct = static_cast<int>(done * 100 / total);
@@ -413,7 +412,7 @@ void Link::Run()
             }
             cart->EndRanges();
             if (!have_save)
-              throw GbaCartError("no-save", "This cartridge has no save data.");
+              throw GbaCartError("no-save", "No save data");
           }
           else
           {
@@ -431,7 +430,7 @@ void Link::Run()
         if (usb.Lost())
           drop_adapter();
         else
-          SetStatus(State::AgentIdle, result.ok ? "Cartridge read." : result.error);
+          SetStatus(State::AgentIdle, result.ok ? "Cartridge read" : result.error);
         m_dump_active = false;
         m_cancel_dump = false;
         if (req->done)
@@ -476,8 +475,7 @@ void Link::Run()
           mirror_fails = 0;
           bad_polls = 0;
           SetStatus(State::ControllerActive,
-                    m_controller_enabled ? "Your GBA is acting as a controller" :
-                                           "Your GBA is showing the game screen");
+                    m_controller_enabled ? "Controller on" : "Screen only");
         }
         uint16_t keys = 0;
         uint32_t raw = 0;
@@ -520,12 +518,12 @@ void Link::Run()
             // The GBA answers as an idle agent: the player pressed L+R+Start+Select.
             m_controller_enabled = false;
             m_released = true;
-            SetStatus(State::AgentIdle, "GBA controller paused (L+R+Start+Select).");
+            SetStatus(State::AgentIdle, "Controller released");
           }
           else
           {
             agent_loaded = false;
-            SetStatus(State::WaitingForGba, "Lost the GBA. Power it on holding START + SELECT.");
+            SetStatus(State::WaitingForGba, "GBA lost: hold START+SELECT");
           }
         }
         if (Clock::now() - stat_time >= std::chrono::seconds(5))
@@ -566,8 +564,7 @@ void Link::Run()
                                   last_wait_reply));
             }
             SetStatus(State::WaitingForGba,
-                      "GB-Link connected. Power on your GBA holding START + SELECT "
-                      "(no cartridge needed) to use it as a controller.");
+                      "Hold START+SELECT, power on GBA");
           }
           if (usb.Lost())
             drop_adapter();
@@ -576,14 +573,14 @@ void Link::Run()
         }
         else
         {
-          SetStatus(State::WaitingForGba, "GB-Link connected (GBA controller is off).");
+          SetStatus(State::WaitingForGba, "Connected, controller off");
           WaitFor(500);
         }
         continue;
       }
 
       // Agent running but nothing to do (controller off): idle without touching the link.
-      SetStatus(State::AgentIdle, "GBA program is running. Controller is off.");
+      SetStatus(State::AgentIdle, "Controller off");
       WaitFor(250);
     }
     catch (const GbaCartError& e)
@@ -591,7 +588,7 @@ void Link::Run()
       m_pad_live = false;
       pad_active = false;
       agent_loaded = false;
-      SetStatus(State::WaitingForGba, std::string("GBA link problem: ") + e.what());
+      SetStatus(State::WaitingForGba, std::string("Link problem: ") + e.what());
       if (usb.Lost())
         drop_adapter();
       WaitFor(500);
