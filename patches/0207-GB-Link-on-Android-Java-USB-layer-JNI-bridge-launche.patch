@@ -1,0 +1,845 @@
+From 0278600bfe60a96cd24d756079599abfad594f30 Mon Sep 17 00:00:00 2001
+From: t <t@t>
+Date: Tue, 10 Nov 2026 12:21:26 -0600
+Subject: [PATCH] GB-Link on Android: Java USB layer, JNI bridge, launcher card
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01764cASb9aVVk2m6JupRMj5
+---
+ .../Android/app/src/main/AndroidManifest.xml  |   4 +
+ .../dolphinemu/DolphinApplication.kt          |   1 +
+ .../features/xdnetplay/GBLinkBridge.kt        |  13 ++
+ .../features/xdnetplay/ui/XDLauncherScreen.kt |  52 +++++
+ .../dolphinemu/dolphinemu/utils/GBLinkUsb.kt  | 165 +++++++++++++
+ Source/Android/jni/CMakeLists.txt             |   1 +
+ Source/Android/jni/GBLink/GBLinkJni.cpp       |  57 +++++
+ Source/Core/Core/HW/GBACore.cpp               |   4 +-
+ Source/Core/Core/HW/GBAPadEmu.cpp             |   4 +-
+ Source/Core/Core/HW/GCPadEmu.cpp              |   6 +-
+ Source/Core/InputCommon/CMakeLists.txt        |   6 +-
+ Source/Core/InputCommon/GBLink/UsbLink.cpp    | 219 +++++++++++++++++-
+ Source/Core/InputCommon/GBLink/UsbLink.h      |  16 ++
+ Source/Core/UICommon/UICommon.cpp             |   6 +-
+ 14 files changed, 536 insertions(+), 18 deletions(-)
+ create mode 100644 Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/GBLinkBridge.kt
+ create mode 100644 Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/utils/GBLinkUsb.kt
+ create mode 100644 Source/Android/jni/GBLink/GBLinkJni.cpp
+
+diff --git a/Source/Android/app/src/main/AndroidManifest.xml b/Source/Android/app/src/main/AndroidManifest.xml
+index cd91051b0..f9e3a6bc5 100644
+--- a/Source/Android/app/src/main/AndroidManifest.xml
++++ b/Source/Android/app/src/main/AndroidManifest.xml
+@@ -20,6 +20,10 @@
+         android:name="android.software.leanback"
+         android:required="false"/>
+ 
++    <uses-feature
++        android:name="android.hardware.usb.host"
++        android:required="false"/>
++
+     <uses-feature android:glEsVersion="0x00030000"/>
+ 
+     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+diff --git a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/DolphinApplication.kt b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/DolphinApplication.kt
+index 6b7596fa2..464a3ea2a 100644
+--- a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/DolphinApplication.kt
++++ b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/DolphinApplication.kt
+@@ -23,6 +23,7 @@ class DolphinApplication : Application() {
+         val usbManager = getSystemService(USB_SERVICE) as UsbManager
+         GCAdapter.manager = usbManager
+         WiimoteAdapter.manager = usbManager
++        org.dolphinemu.dolphinemu.utils.GBLinkUsb.init()
+ 
+         if (DirectoryInitialization.shouldStart(applicationContext)) {
+             DirectoryInitialization.start(applicationContext)
+diff --git a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/GBLinkBridge.kt b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/GBLinkBridge.kt
+new file mode 100644
+index 000000000..ec6d9a2b6
+--- /dev/null
++++ b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/GBLinkBridge.kt
+@@ -0,0 +1,13 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++package org.dolphinemu.dolphinemu.features.xdnetplay
++
++/** The shared GB-Link manager (native), for the launcher card. */
++object GBLinkBridge {
++    @JvmStatic external fun getStatus(): String
++    @JvmStatic external fun getAdapterCount(): Int
++    @JvmStatic external fun setControllerEnabled(on: Boolean)
++    @JvmStatic external fun isControllerEnabled(): Boolean
++    @JvmStatic external fun setScreenMirror(on: Boolean)
++    @JvmStatic external fun isScreenMirror(): Boolean
++}
+diff --git a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/XDLauncherScreen.kt b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/XDLauncherScreen.kt
+index c891af8ef..4caaf487f 100644
+--- a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/XDLauncherScreen.kt
++++ b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/features/xdnetplay/ui/XDLauncherScreen.kt
+@@ -29,6 +29,9 @@ import androidx.compose.material3.Switch
+ import androidx.compose.material3.Text
+ import androidx.compose.material3.TextButton
+ import androidx.compose.runtime.Composable
++import androidx.compose.runtime.LaunchedEffect
++import kotlinx.coroutines.delay
++import org.dolphinemu.dolphinemu.features.xdnetplay.GBLinkBridge
+ import androidx.compose.material3.Checkbox
+ import androidx.compose.material3.OutlinedTextField
+ import androidx.compose.foundation.text.KeyboardOptions
+@@ -164,6 +167,8 @@ fun XDLauncherScreen(
+                     onImport = onImportSave,
+                     onRestore = onRestoreDefaultSave
+                 )
++                Spacer(Modifier.height(12.dp))
++                GbLinkCard()
+                 Spacer(Modifier.height(24.dp))
+ 
+                 FilledTonalButton(
+@@ -786,3 +791,50 @@ private fun SavedTeamsDialog(onClose: () -> Unit) {
+         confirmButton = { TextButton(onClick = onClose) { Text("Close") } }
+     )
+ }
++
++/** Real GBA through a GB-Link adapter (USB). Status refreshes while the screen is open. */
++@Composable
++private fun GbLinkCard() {
++    var status by remember { mutableStateOf(GBLinkBridge.getStatus()) }
++    var controller by remember { mutableStateOf(GBLinkBridge.isControllerEnabled()) }
++    var mirror by remember { mutableStateOf(GBLinkBridge.isScreenMirror()) }
++    LaunchedEffect(Unit) {
++        while (true) {
++            status = GBLinkBridge.getStatus()
++            delay(500)
++        }
++    }
++    Card(modifier = Modifier.fillMaxWidth()) {
++        Column(
++            modifier = Modifier.padding(16.dp),
++            verticalArrangement = Arrangement.spacedBy(8.dp)
++        ) {
++            Text("Real GBA", style = MaterialTheme.typography.titleMedium)
++            Text(
++                text = status.ifEmpty { "No adapter" },
++                style = MaterialTheme.typography.bodyMedium,
++                color = MaterialTheme.colorScheme.onSurfaceVariant
++            )
++            Row(
++                modifier = Modifier.fillMaxWidth(),
++                verticalAlignment = Alignment.CenterVertically
++            ) {
++                Text("GBA as controller", modifier = Modifier.weight(1f))
++                Switch(checked = controller, onCheckedChange = {
++                    controller = it
++                    GBLinkBridge.setControllerEnabled(it)
++                })
++            }
++            Row(
++                modifier = Modifier.fillMaxWidth(),
++                verticalAlignment = Alignment.CenterVertically
++            ) {
++                Text("Mirror GBA screen", modifier = Modifier.weight(1f))
++                Switch(checked = mirror, onCheckedChange = {
++                    mirror = it
++                    GBLinkBridge.setScreenMirror(it)
++                })
++            }
++        }
++    }
++}
+diff --git a/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/utils/GBLinkUsb.kt b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/utils/GBLinkUsb.kt
+new file mode 100644
+index 000000000..4b1ac680b
+--- /dev/null
++++ b/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/utils/GBLinkUsb.kt
+@@ -0,0 +1,165 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++package org.dolphinemu.dolphinemu.utils
++
++import android.app.PendingIntent
++import android.content.Context
++import android.content.Intent
++import android.hardware.usb.UsbConstants
++import android.hardware.usb.UsbDevice
++import android.hardware.usb.UsbDeviceConnection
++import android.hardware.usb.UsbEndpoint
++import android.hardware.usb.UsbInterface
++import android.hardware.usb.UsbManager
++import androidx.annotation.Keep
++import org.dolphinemu.dolphinemu.BuildConfig
++import org.dolphinemu.dolphinemu.DolphinApplication
++
++/**
++ * USB access for GB-Link adapters. The shared GB-Link code (UsbLink.cpp) calls the @Keep functions
++ * below from its own thread; everything Android-specific (permission, opening, endpoints) lives here.
++ */
++object GBLinkUsb {
++    private val VIDS = intArrayOf(0x2FE3, 0xCAFE, 0x239A)
++    private val ACTION_PERMISSION = BuildConfig.APPLICATION_ID + ".GBLINK_USB_PERMISSION"
++
++    private class Open(
++        val connection: UsbDeviceConnection,
++        val usbInterface: UsbInterface,
++        val endpoints: Map<Int, UsbEndpoint>
++    )
++
++    private val lock = Any()
++    private val open = HashMap<String, Open>()
++    private val asked = HashSet<String>()
++
++    @JvmStatic
++    external fun nativeInit()
++
++    /** Call once after the native library is loaded. */
++    @JvmStatic
++    fun init() {
++        nativeInit()
++    }
++
++    private fun manager(): UsbManager =
++        DolphinApplication.getAppContext().getSystemService(Context.USB_SERVICE) as UsbManager
++
++    private fun isGbLink(device: UsbDevice) = VIDS.contains(device.vendorId)
++
++    private fun requestPermission(device: UsbDevice) {
++        val context = DolphinApplication.getAppContext()
++        val intent = Intent(ACTION_PERMISSION).setPackage(context.packageName)
++        val pending = PendingIntent.getBroadcast(context, 0, intent, PendingIntent.FLAG_IMMUTABLE)
++        manager().requestPermission(device, pending)
++    }
++
++    // "2.27" (bcdDevice as UsbDevice.version prints it) -> 0x0227
++    private fun bcd(version: String?): Int {
++        val parts = (version ?: "0.0").split(".")
++        val major = parts.getOrNull(0)?.toIntOrNull(16) ?: 0
++        val minor = parts.getOrNull(1)?.toIntOrNull(16) ?: 0
++        return (major shl 8) or minor
++    }
++
++    /** One "name|vid|pid|bcd|product" per adapter we may open. Asks for permission as needed. */
++    @Keep
++    @JvmStatic
++    fun list(): Array<String> {
++        val mgr = manager()
++        val out = ArrayList<String>()
++        val present = HashSet<String>()
++        for (device in mgr.deviceList.values) {
++            if (!isGbLink(device)) continue
++            present.add(device.deviceName)
++            if (!mgr.hasPermission(device)) {
++                // Ask once per plug-in; the next poll sees the result.
++                if (asked.add(device.deviceName)) requestPermission(device)
++                continue
++            }
++            out.add(
++                "${device.deviceName}|${device.vendorId}|${device.productId}|" +
++                    "${bcd(device.version)}|${device.productName ?: "GB-Link"}"
++            )
++        }
++        asked.retainAll(present)
++        return out.toTypedArray()
++    }
++
++    /** Opens and claims the adapter. Returns [iface, cmdOut, cmdIn, dataOut, dataIn, 0, 0, 0]. */
++    @Keep
++    @JvmStatic
++    fun open(name: String): IntArray? {
++        val mgr = manager()
++        val device = mgr.deviceList[name] ?: return null
++        if (!mgr.hasPermission(device)) return null
++        synchronized(lock) { closeLocked(name) }
++        val connection = mgr.openDevice(device) ?: return null
++
++        var chosen: UsbInterface? = null
++        for (i in 0 until device.interfaceCount) {
++            val itf = device.getInterface(i)
++            if (itf.interfaceClass != 0xFF) continue
++            val bulk = (0 until itf.endpointCount).map { itf.getEndpoint(it) }
++                .filter { it.type == UsbConstants.USB_ENDPOINT_XFER_BULK }
++            if (bulk.any { it.direction == UsbConstants.USB_DIR_IN } &&
++                bulk.any { it.direction == UsbConstants.USB_DIR_OUT }
++            ) {
++                chosen = itf
++                break
++            }
++        }
++        if (chosen == null || !connection.claimInterface(chosen, true)) {
++            connection.close()
++            return null
++        }
++        val bulk = (0 until chosen.endpointCount).map { chosen.getEndpoint(it) }
++            .filter { it.type == UsbConstants.USB_ENDPOINT_XFER_BULK }
++        val ins = bulk.filter { it.direction == UsbConstants.USB_DIR_IN }.sortedBy { it.address }
++        val outs = bulk.filter { it.direction == UsbConstants.USB_DIR_OUT }.sortedBy { it.address }
++
++        val result = IntArray(8)
++        result[0] = chosen.id
++        if (device.vendorId == 0x2FE3 && ins.size >= 2 && outs.size >= 2) {
++            result[1] = outs[0].address
++            result[2] = ins[0].address
++            result[3] = outs[1].address
++            result[4] = ins[1].address
++        } else {
++            result[3] = outs[0].address
++            result[4] = ins[0].address
++            // Old firmware: CDC-style SET_CONTROL_LINE_STATE (DTR).
++            connection.controlTransfer(0x21, 0x22, 0x01, chosen.id, null, 0, 1000)
++        }
++        synchronized(lock) {
++            open[name] = Open(connection, chosen, bulk.associateBy { it.address })
++        }
++        return result
++    }
++
++    /** Bytes moved, or a negative number: -1 timeout/failure, -2 adapter gone. */
++    @Keep
++    @JvmStatic
++    fun bulk(name: String, endpoint: Int, buffer: ByteArray, length: Int, timeoutMs: Int): Int {
++        val entry = synchronized(lock) { open[name] } ?: return -2
++        val ep = entry.endpoints[endpoint] ?: return -1
++        val moved = entry.connection.bulkTransfer(ep, buffer, length, timeoutMs)
++        if (moved < 0 && !manager().deviceList.containsKey(name)) return -2
++        return moved
++    }
++
++    @Keep
++    @JvmStatic
++    fun close(name: String) {
++        synchronized(lock) { closeLocked(name) }
++    }
++
++    private fun closeLocked(name: String) {
++        val entry = open.remove(name) ?: return
++        try {
++            entry.connection.releaseInterface(entry.usbInterface)
++        } catch (_: Exception) {
++        }
++        entry.connection.close()
++    }
++}
+diff --git a/Source/Android/jni/CMakeLists.txt b/Source/Android/jni/CMakeLists.txt
+index 913b7d024..0b1c0963f 100644
+--- a/Source/Android/jni/CMakeLists.txt
++++ b/Source/Android/jni/CMakeLists.txt
+@@ -12,6 +12,7 @@ add_library(main SHARED
+   Config/PostProcessing.cpp
+   GBA/AndroidGBAHost.cpp
+   GBA/AndroidGBAHost.h
++  GBLink/GBLinkJni.cpp
+   GameList/GameFile.cpp
+   GameList/GameFile.h
+   GameList/GameFileCache.cpp
+diff --git a/Source/Android/jni/GBLink/GBLinkJni.cpp b/Source/Android/jni/GBLink/GBLinkJni.cpp
+new file mode 100644
+index 000000000..7964fdbee
+--- /dev/null
++++ b/Source/Android/jni/GBLink/GBLinkJni.cpp
+@@ -0,0 +1,57 @@
++// GB-Link on Android: the bridge between the Kotlin USB layer / launcher card and the shared
++// GB-Link manager.
++#include <jni.h>
++
++#include "InputCommon/GBLink/GBLinkManager.h"
++#include "InputCommon/GBLink/UsbLink.h"
++
++extern "C" {
++
++// Called once from GBLinkUsb (Kotlin) with its own class, so the native USB code can call back
++// into it from any thread, then starts the adapter manager.
++JNIEXPORT void JNICALL Java_org_dolphinemu_dolphinemu_utils_GBLinkUsb_nativeInit(JNIEnv* env,
++                                                                                  jclass cls)
++{
++  GBLink::AndroidBridge::Init(env, cls);
++  GBLink::Manager::Get().Start();
++}
++
++JNIEXPORT jstring JNICALL
++Java_org_dolphinemu_dolphinemu_features_xdnetplay_GBLinkBridge_getStatus(JNIEnv* env, jclass)
++{
++  return env->NewStringUTF(GBLink::Manager::Get().GetStatus().text.c_str());
++}
++
++JNIEXPORT jint JNICALL
++Java_org_dolphinemu_dolphinemu_features_xdnetplay_GBLinkBridge_getAdapterCount(JNIEnv*, jclass)
++{
++  return static_cast<jint>(GBLink::Manager::Get().GetAdapters().size());
++}
++
++JNIEXPORT void JNICALL
++Java_org_dolphinemu_dolphinemu_features_xdnetplay_GBLinkBridge_setControllerEnabled(JNIEnv*, jclass,
++                                                                                    jboolean on)
++{
++  GBLink::Manager::Get().SetControllerEnabled(on);
++}
++
++JNIEXPORT jboolean JNICALL
++Java_org_dolphinemu_dolphinemu_features_xdnetplay_GBLinkBridge_isControllerEnabled(JNIEnv*, jclass)
++{
++  return GBLink::Manager::Get().IsControllerEnabled();
++}
++
++JNIEXPORT void JNICALL
++Java_org_dolphinemu_dolphinemu_features_xdnetplay_GBLinkBridge_setScreenMirror(JNIEnv*, jclass,
++                                                                               jboolean on)
++{
++  GBLink::Manager::Get().SetScreenMirror(on);
++}
++
++JNIEXPORT jboolean JNICALL
++Java_org_dolphinemu_dolphinemu_features_xdnetplay_GBLinkBridge_isScreenMirror(JNIEnv*, jclass)
++{
++  return GBLink::Manager::Get().IsScreenMirror();
++}
++
++}  // extern "C"
+diff --git a/Source/Core/Core/HW/GBACore.cpp b/Source/Core/Core/HW/GBACore.cpp
+index 98054aa32..2c1fbfa35 100644
+--- a/Source/Core/Core/HW/GBACore.cpp
++++ b/Source/Core/Core/HW/GBACore.cpp
+@@ -40,7 +40,7 @@
+ #include "Core/NetPlayProto.h"
+ #include "Core/System.h"
+ 
+-#if defined(__LIBUSB__) && !defined(ANDROID)
++#if defined(__LIBUSB__) || defined(ANDROID)
+ #include "InputCommon/GBLink/GBLinkManager.h"
+ #endif
+ 
+@@ -528,7 +528,7 @@ void Core::AddCallbacks()
+     auto core = static_cast<Core*>(context);
+     if (auto host = core->m_host.lock())
+       host->FrameEnded(core->m_video_buffer);
+-#if defined(__LIBUSB__) && !defined(ANDROID)
++#if defined(__LIBUSB__) || defined(ANDROID)
+     // A real GBA acting as a controller shows this machine's own GBA screen.
+     if (core->m_device_number != Config::GBPLAYER_GBA_INDEX &&
+         GBLink::Manager::Get().WantsMirrorFrames(static_cast<int>(core->m_device_number)) &&
+diff --git a/Source/Core/Core/HW/GBAPadEmu.cpp b/Source/Core/Core/HW/GBAPadEmu.cpp
+index 1190e8be6..15f8f6905 100644
+--- a/Source/Core/Core/HW/GBAPadEmu.cpp
++++ b/Source/Core/Core/HW/GBAPadEmu.cpp
+@@ -10,7 +10,7 @@
+ #include "InputCommon/ControllerEmu/ControlGroup/Buttons.h"
+ #include "InputCommon/GCPadStatus.h"
+ 
+-#if defined(__LIBUSB__) && !defined(ANDROID)
++#if defined(__LIBUSB__) || defined(ANDROID)
+ #include "InputCommon/GBLink/GBLinkManager.h"
+ #endif
+ 
+@@ -77,7 +77,7 @@ GCPadStatus GBAPad::GetInput()
+   // DPad
+   m_dpad->GetState(&pad.button, dpad_bitmasks, m_input_override_function);
+ 
+-#if defined(__LIBUSB__) && !defined(ANDROID)
++#if defined(__LIBUSB__) || defined(ANDROID)
+   // A real GBA connected through a GB-Link adapter counts as this GBA's controller. Its key
+   // bits are already in GBA order: A, B, Select, Start, Right, Left, Up, Down, R, L.
+   {
+diff --git a/Source/Core/Core/HW/GCPadEmu.cpp b/Source/Core/Core/HW/GCPadEmu.cpp
+index 61497a159..7f4ffb2b6 100644
+--- a/Source/Core/Core/HW/GCPadEmu.cpp
++++ b/Source/Core/Core/HW/GCPadEmu.cpp
+@@ -17,7 +17,7 @@
+ #include "InputCommon/ControllerEmu/StickGate.h"
+ #include "InputCommon/GCPadStatus.h"
+ 
+-#if defined(__LIBUSB__) && !defined(ANDROID)
++#if defined(__LIBUSB__) || defined(ANDROID)
+ #include "InputCommon/GBLink/GBLinkManager.h"
+ #endif
+ 
+@@ -145,7 +145,7 @@ GCPadStatus GCPad::GetInput() const
+   const auto lock = GetStateLock();
+   GCPadStatus pad = {};
+ 
+-#if defined(__LIBUSB__) && !defined(ANDROID)
++#if defined(__LIBUSB__) || defined(ANDROID)
+   // Optional: the real GBA (through GB-Link) can navigate menus as port 1's pad. Its key bits
+   // are in GBA order: A, B, Select, Start, Right, Left, Up, Down, R, L.
+   u16 gba_buttons = 0;
+@@ -207,7 +207,7 @@ GCPadStatus GCPad::GetInput() const
+   pad.triggerLeft = MapFloat<u8>(triggers[0], 0);
+   pad.triggerRight = MapFloat<u8>(triggers[1], 0);
+ 
+-#if defined(__LIBUSB__) && !defined(ANDROID)
++#if defined(__LIBUSB__) || defined(ANDROID)
+   if (gba_buttons)
+   {
+     pad.button |= gba_buttons;
+diff --git a/Source/Core/InputCommon/CMakeLists.txt b/Source/Core/InputCommon/CMakeLists.txt
+index a0942e8fa..b21e01390 100644
+--- a/Source/Core/InputCommon/CMakeLists.txt
++++ b/Source/Core/InputCommon/CMakeLists.txt
+@@ -147,7 +147,11 @@ endif()
+ 
+ if(NOT ANDROID)
+   target_link_libraries(inputcommon PUBLIC LibUSB::LibUSB)
+-  # GB-Link: native USB client for a real GBA (controller + cartridge save dump).
++endif()
++
++# GB-Link: native USB client for a real GBA (controller + cartridge save dump). Android reaches
++# the adapter through Kotlin's UsbManager instead of libusb (see UsbLink.cpp).
++if(TRUE)
+   target_sources(inputcommon PRIVATE
+     GBLink/AgentPayloadData.cpp
+     GBLink/DumperPayloadData.cpp
+diff --git a/Source/Core/InputCommon/GBLink/UsbLink.cpp b/Source/Core/InputCommon/GBLink/UsbLink.cpp
+index 43dd85572..0fdbfb197 100644
+--- a/Source/Core/InputCommon/GBLink/UsbLink.cpp
++++ b/Source/Core/InputCommon/GBLink/UsbLink.cpp
+@@ -3,10 +3,46 @@
+ #include <algorithm>
+ #include <cstdio>
+ 
++#ifdef ANDROID
++#include "jni/AndroidCommon/IDCache.h"
++#else
+ #include <libusb.h>
++#endif
+ 
+ namespace GBLink
+ {
++#ifdef ANDROID
++namespace
++{
++// Same values libusb uses, so the result handling below is shared.
++constexpr int LIBUSB_ERROR_IO = -1;
++constexpr int LIBUSB_ERROR_NO_DEVICE = -4;
++constexpr int LIBUSB_ERROR_TIMEOUT = -7;
++constexpr int LIBUSB_ERROR_PIPE = -9;
++const char* libusb_error_name(int)
++{
++  return "USB error";
++}
++
++jclass s_usb_class = nullptr;
++jmethodID s_list = nullptr, s_open = nullptr, s_bulk = nullptr, s_close = nullptr;
++// Not a real handle: UsbLink only tests m_handle for "open".
++libusb_device_handle* const kOpenMarker = reinterpret_cast<libusb_device_handle*>(1);
++}  // namespace
++
++namespace AndroidBridge
++{
++void Init(JNIEnv* env, jclass usb_class)
++{
++  s_usb_class = static_cast<jclass>(env->NewGlobalRef(usb_class));
++  s_list = env->GetStaticMethodID(s_usb_class, "list", "()[Ljava/lang/String;");
++  s_open = env->GetStaticMethodID(s_usb_class, "open", "(Ljava/lang/String;)[I");
++  s_bulk = env->GetStaticMethodID(s_usb_class, "bulk", "(Ljava/lang/String;I[BII)I");
++  s_close = env->GetStaticMethodID(s_usb_class, "close", "(Ljava/lang/String;)V");
++}
++}  // namespace AndroidBridge
++#endif
++
+ namespace
+ {
+ constexpr uint16_t kVids[] = {0x2FE3, 0xCAFE, 0x239A};
+@@ -16,6 +52,7 @@ bool IsGbLinkVid(uint16_t vid)
+   return std::find(std::begin(kVids), std::end(kVids), vid) != std::end(kVids);
+ }
+ 
++#ifndef ANDROID
+ std::string StrDesc(libusb_device_handle* h, uint8_t idx)
+ {
+   if (!h || idx == 0)
+@@ -24,6 +61,7 @@ std::string StrDesc(libusb_device_handle* h, uint8_t idx)
+   const int n = libusb_get_string_descriptor_ascii(h, idx, buf, sizeof(buf));
+   return n > 0 ? std::string(reinterpret_cast<char*>(buf), n) : std::string{};
+ }
++#endif
+ }  // namespace
+ 
+ std::string Hex(const uint8_t* data, size_t len, size_t max)
+@@ -42,6 +80,169 @@ std::string Hex(const uint8_t* data, size_t len, size_t max)
+   return s;
+ }
+ 
++#ifdef ANDROID
++UsbLink::UsbLink() = default;
++
++UsbLink::~UsbLink()
++{
++  Close();
++}
++
++namespace
++{
++std::string JString(JNIEnv* env, jobject o)
++{
++  const char* c = env->GetStringUTFChars(static_cast<jstring>(o), nullptr);
++  std::string out = c ? c : "";
++  if (c)
++    env->ReleaseStringUTFChars(static_cast<jstring>(o), c);
++  return out;
++}
++
++// "/dev/bus/usb/001/004" -> bus 1, address 4
++bool ParseDeviceName(const std::string& name, int* bus, int* address)
++{
++  return std::sscanf(name.c_str(), "/dev/bus/usb/%d/%d", bus, address) == 2;
++}
++}  // namespace
++
++std::vector<DeviceInfo> UsbLink::List(std::string* error)
++{
++  std::vector<DeviceInfo> out;
++  JNIEnv* env = IDCache::GetEnvForThread();
++  if (!env || !s_usb_class)
++  {
++    if (error)
++      *error = "USB not ready";
++    return out;
++  }
++  auto* arr = static_cast<jobjectArray>(env->CallStaticObjectMethod(s_usb_class, s_list));
++  if (!arr)
++    return out;
++  const jsize n = env->GetArrayLength(arr);
++  for (jsize i = 0; i < n; i++)
++  {
++    jobject js = env->GetObjectArrayElement(arr, i);
++    // name|vid|pid|bcd|product
++    const std::string line = JString(env, js);
++    env->DeleteLocalRef(js);
++    std::vector<std::string> f;
++    size_t start = 0;
++    for (size_t p; (p = line.find('|', start)) != std::string::npos; start = p + 1)
++      f.push_back(line.substr(start, p - start));
++    f.push_back(line.substr(start));
++    int bus = 0, address = 0;
++    if (f.size() < 5 || !ParseDeviceName(f[0], &bus, &address))
++      continue;
++    DeviceInfo info;
++    info.vid = static_cast<uint16_t>(std::stoi(f[1]));
++    info.pid = static_cast<uint16_t>(std::stoi(f[2]));
++    info.bcd = static_cast<uint16_t>(std::stoi(f[3]));
++    info.bus = static_cast<uint8_t>(bus);
++    info.address = static_cast<uint8_t>(address);
++    info.port_path = std::to_string(address);
++    info.product = f[4];
++    out.push_back(std::move(info));
++  }
++  env->DeleteLocalRef(arr);
++  return out;
++}
++
++bool UsbLink::Open(std::string* error, uint8_t bus, uint8_t address)
++{
++  const auto fail = [&](const std::string& m) {
++    if (error)
++      *error = m;
++    Close();
++    return false;
++  };
++  JNIEnv* env = IDCache::GetEnvForThread();
++  if (!env || !s_usb_class)
++    return fail("USB not ready");
++  const auto devices = List(error);
++  const DeviceInfo* found = nullptr;
++  for (const auto& d : devices)
++  {
++    if (bus && (d.bus != bus || d.address != address))
++      continue;
++    found = &d;
++    break;
++  }
++  if (!found)
++    return fail("no GB-Link adapter found (is USB permission granted?)");
++  char name[64];
++  std::snprintf(name, sizeof(name), "/dev/bus/usb/%03d/%03d", found->bus, found->address);
++  jstring key = env->NewStringUTF(name);
++  auto* info = static_cast<jintArray>(env->CallStaticObjectMethod(s_usb_class, s_open, key));
++  env->DeleteLocalRef(key);
++  if (!info)
++    return fail("could not open the adapter");
++  jint v[8] = {};
++  env->GetIntArrayRegion(info, 0, 8, v);
++  env->DeleteLocalRef(info);
++  m_info = *found;
++  m_new_firmware = m_info.IsNewFirmware();
++  m_interface = v[0];
++  m_ep_cmd_out = static_cast<uint8_t>(v[1]);
++  m_ep_cmd_in = static_cast<uint8_t>(v[2]);
++  m_ep_out = static_cast<uint8_t>(v[3]);
++  m_ep_in = static_cast<uint8_t>(v[4]);
++  m_android_key = name;
++  m_handle = kOpenMarker;
++  if (m_log)
++  {
++    char b[200];
++    std::snprintf(b, sizeof(b),
++                  "opened %04x:%04x bcd=%04x iface=%d ep cmd out/in=%02x/%02x data out/in=%02x/%02x",
++                  m_info.vid, m_info.pid, m_info.bcd, m_interface, m_ep_cmd_out, m_ep_cmd_in,
++                  m_ep_out, m_ep_in);
++    m_log(b);
++  }
++  return true;
++}
++
++void UsbLink::Close()
++{
++  if (m_handle)
++  {
++    if (JNIEnv* env = IDCache::GetEnvForThread(); env && s_usb_class)
++    {
++      jstring key = env->NewStringUTF(m_android_key.c_str());
++      env->CallStaticVoidMethod(s_usb_class, s_close, key);
++      env->DeleteLocalRef(key);
++    }
++    m_handle = nullptr;
++  }
++  m_interface = -1;
++  m_lost = false;
++}
++
++int UsbLink::BulkXfer(uint8_t ep, uint8_t* data, int len, int* done, int timeout_ms)
++{
++  *done = 0;
++  JNIEnv* env = IDCache::GetEnvForThread();
++  if (!env || !s_usb_class)
++    return LIBUSB_ERROR_NO_DEVICE;
++  jstring key = env->NewStringUTF(m_android_key.c_str());
++  jbyteArray buf = env->NewByteArray(len);
++  if (!(ep & 0x80))
++    env->SetByteArrayRegion(buf, 0, len, reinterpret_cast<const jbyte*>(data));
++  const int n = env->CallStaticIntMethod(s_usb_class, s_bulk, key, static_cast<jint>(ep), buf,
++                                         static_cast<jint>(len), static_cast<jint>(timeout_ms));
++  if ((ep & 0x80) && n > 0)
++    env->GetByteArrayRegion(buf, 0, n, reinterpret_cast<jbyte*>(data));
++  env->DeleteLocalRef(buf);
++  env->DeleteLocalRef(key);
++  if (n >= 0)
++  {
++    *done = n;
++    // A read that returned nothing in time is a timeout, as with libusb.
++    return (n == 0 && (ep & 0x80)) ? LIBUSB_ERROR_TIMEOUT : 0;
++  }
++  return n == -2 ? LIBUSB_ERROR_NO_DEVICE : LIBUSB_ERROR_TIMEOUT;
++}
++
++#else
+ UsbLink::UsbLink()
+ {
+   if (libusb_init(&m_ctx) != 0)
+@@ -256,6 +457,12 @@ void UsbLink::Close()
+   m_lost = false;
+ }
+ 
++int UsbLink::BulkXfer(uint8_t ep, uint8_t* data, int len, int* done, int timeout_ms)
++{
++  return libusb_bulk_transfer(m_handle, ep, data, len, done, timeout_ms);
++}
++#endif  // ANDROID
++
+ void UsbLink::NoteResult(int rc)
+ {
+   if (rc == LIBUSB_ERROR_NO_DEVICE || rc == LIBUSB_ERROR_IO || rc == LIBUSB_ERROR_PIPE)
+@@ -275,8 +482,8 @@ bool UsbLink::SendCommand(const std::vector<uint8_t>& bytes)
+     return false;
+   const uint8_t ep = (m_new_firmware && m_ep_cmd_out) ? m_ep_cmd_out : m_ep_out;
+   int sent = 0;
+-  const int rc = libusb_bulk_transfer(m_handle, ep, const_cast<uint8_t*>(bytes.data()),
+-                                      static_cast<int>(bytes.size()), &sent, 2000);
++  const int rc = BulkXfer(ep, const_cast<uint8_t*>(bytes.data()), static_cast<int>(bytes.size()),
++                          &sent, 2000);
+   NoteResult(rc);
+   Trace("CMD  >", bytes.data(), bytes.size());
+   return rc == 0 && sent == static_cast<int>(bytes.size());
+@@ -287,8 +494,7 @@ bool UsbLink::WriteBytes(const uint8_t* data, size_t len)
+   if (!m_handle)
+     return false;
+   int sent = 0;
+-  const int rc = libusb_bulk_transfer(m_handle, m_ep_out, const_cast<uint8_t*>(data),
+-                                      static_cast<int>(len), &sent, 2000);
++  const int rc = BulkXfer(m_ep_out, const_cast<uint8_t*>(data), static_cast<int>(len), &sent, 2000);
+   NoteResult(rc);
+   Trace("DATA >", data, len);
+   return rc == 0 && sent == static_cast<int>(len);
+@@ -299,8 +505,7 @@ size_t UsbLink::ReadBytes(uint8_t* out, size_t max_len, int timeout_ms)
+   if (!m_handle)
+     return 0;
+   int got = 0;
+-  const int rc = libusb_bulk_transfer(m_handle, m_ep_in, out, static_cast<int>(max_len), &got,
+-                                      timeout_ms);
++  const int rc = BulkXfer(m_ep_in, out, static_cast<int>(max_len), &got, timeout_ms);
+   NoteResult(rc);
+   if (rc != 0 && rc != LIBUSB_ERROR_TIMEOUT)
+     Trace((std::string("DATA < error ") + libusb_error_name(rc)).c_str(), nullptr, 0);
+@@ -314,7 +519,7 @@ size_t UsbLink::ReadStatus(uint8_t* out, size_t max_len, int timeout_ms)
+   if (!m_handle || !m_new_firmware || !m_ep_cmd_in)
+     return 0;
+   int got = 0;
+-  libusb_bulk_transfer(m_handle, m_ep_cmd_in, out, static_cast<int>(max_len), &got, timeout_ms);
++  BulkXfer(m_ep_cmd_in, out, static_cast<int>(max_len), &got, timeout_ms);
+   if (got > 0)
+     Trace("STAT <", out, got);
+   return got > 0 ? static_cast<size_t>(got) : 0;
+diff --git a/Source/Core/InputCommon/GBLink/UsbLink.h b/Source/Core/InputCommon/GBLink/UsbLink.h
+index 60e1c78c6..a1696e76d 100644
+--- a/Source/Core/InputCommon/GBLink/UsbLink.h
++++ b/Source/Core/InputCommon/GBLink/UsbLink.h
+@@ -10,6 +10,10 @@
+ #include <string>
+ #include <vector>
+ 
++#ifdef ANDROID
++#include <jni.h>
++#endif
++
+ struct libusb_context;
+ struct libusb_device_handle;
+ 
+@@ -98,8 +102,20 @@ private:
+   bool m_trace = false;
+   bool m_lost = false;
+   void NoteResult(int libusb_rc);
++  // One bulk transfer on either backend (libusb, or the Java connection on Android).
++  int BulkXfer(uint8_t ep, uint8_t* data, int len, int* done, int timeout_ms);
++  std::string m_android_key;  // Android only: the UsbManager device name
+   LogFn m_log;
+ };
+ 
+ std::string Hex(const uint8_t* data, size_t len, size_t max = 64);
++
++#ifdef ANDROID
++// Android has no libusb here: the Kotlin class GBLinkUsb owns the UsbManager connection and this
++// module calls into it. Init is called once from Java with that class.
++namespace AndroidBridge
++{
++void Init(JNIEnv* env, jclass usb_class);
++}
++#endif
+ }  // namespace GBLink
+diff --git a/Source/Core/UICommon/UICommon.cpp b/Source/Core/UICommon/UICommon.cpp
+index a3e9e0a99..bbfe9ab1c 100644
+--- a/Source/Core/UICommon/UICommon.cpp
++++ b/Source/Core/UICommon/UICommon.cpp
+@@ -42,7 +42,7 @@
+ 
+ #include "InputCommon/ControllerInterface/ControllerInterface.h"
+ #include "InputCommon/GCAdapter.h"
+-#if defined(__LIBUSB__) && !defined(ANDROID)
++#if defined(__LIBUSB__) || defined(ANDROID)
+ #include "InputCommon/GBLink/GBLinkManager.h"
+ #endif
+ 
+@@ -189,7 +189,7 @@ void InitControllers(const WindowSystemInfo& wsi)
+   GCAdapter::Init();
+   Pad::Initialize();
+   Pad::InitializeGBA();
+-#if defined(__LIBUSB__) && !defined(ANDROID)
++#if defined(__LIBUSB__) || defined(ANDROID)
+   GBLink::Manager::Get().Start();
+ #endif
+   Keyboard::Initialize();
+@@ -200,7 +200,7 @@ void InitControllers(const WindowSystemInfo& wsi)
+ 
+ void ShutdownControllers()
+ {
+-#if defined(__LIBUSB__) && !defined(ANDROID)
++#if defined(__LIBUSB__) || defined(ANDROID)
+   GBLink::Manager::Get().Stop();
+ #endif
+   Pad::Shutdown();
+-- 
+2.43.0
+
