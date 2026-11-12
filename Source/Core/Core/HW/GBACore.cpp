@@ -529,15 +529,25 @@ void Core::AddCallbacks()
     if (auto host = core->m_host.lock())
       host->FrameEnded(core->m_video_buffer);
 #if defined(__LIBUSB__) || defined(ANDROID)
-    // A real GBA acting as a controller shows this machine's own GBA screen.
-    if (core->m_device_number != Config::GBPLAYER_GBA_INDEX &&
-        GBLink::Manager::Get().WantsMirrorFrames(static_cast<int>(core->m_device_number)) &&
-        (!NetPlay::IsNetPlayRunning() ||
-         NetPlay::GetPadDetails(static_cast<int>(core->m_device_number)).is_local))
+    // A real GBA acting as a controller shows this machine's own GBA screen. The adapter is
+    // keyed like its keys are (GBAPad asks with the local pad number), which in netplay is not
+    // the in-game port: a host sitting at port 2 is local pad 0.
+    if (core->m_device_number != Config::GBPLAYER_GBA_INDEX)
     {
-      GBLink::Manager::Get().SubmitMirrorFrame(static_cast<int>(core->m_device_number),
-                                               core->m_video_buffer.data(),
-                                               core->m_video_buffer.size());
+      int link_device = static_cast<int>(core->m_device_number);
+      bool mine = true;
+      if (NetPlay::IsNetPlayRunning())
+      {
+        const auto details = NetPlay::GetPadDetails(link_device);
+        mine = details.is_local;
+        link_device = details.local_pad;
+      }
+      if (mine && link_device >= 0 && link_device < 4 &&
+          GBLink::Manager::Get().WantsMirrorFrames(link_device))
+      {
+        GBLink::Manager::Get().SubmitMirrorFrame(link_device, core->m_video_buffer.data(),
+                                                 core->m_video_buffer.size());
+      }
     }
 #endif
   };
