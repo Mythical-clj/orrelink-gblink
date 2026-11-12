@@ -60,6 +60,12 @@ jobs:
           cd dolphin
           git config user.name "logdog2325"
           git config user.email "loganjayfisher@gmail.com"
+          # Netplay refuses to connect between builds with different git revisions, and every
+          # commit made below carries a date. Pin the dates to the last change of the patch
+          # series so the same patches always give the same revision, run after run: Windows,
+          # macOS and Linux builds from different runs then still match.
+          PIN="$(git -C ../ci log -1 --format=%cI -- patches)"
+          export GIT_COMMITTER_DATE="$PIN" GIT_AUTHOR_DATE="$PIN"
           git fetch origin refs/pull/14745/head:pr-14745
           git checkout -b xd-netplay "$BASE_SHA"
           if git cat-file -e "$PR_SHA^{commit}" 2>/dev/null; then
