@@ -1,0 +1,55 @@
+From 9e9f72189285d66758a5f7fe2c12d4e8c51b65f4 Mon Sep 17 00:00:00 2001
+From: t <t@t>
+Date: Wed, 11 Nov 2026 22:04:18 -0600
+Subject: [PATCH] GBLink: key the screen mirror by local pad in netplay
+
+GBAPad asks the Link for keys with the local pad number, but the mirror used
+the in-game port, so a host at port 2 asked for a GB-Link that does not exist.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01764cASb9aVVk2m6JupRMj5
+---
+ Source/Core/Core/HW/GBACore.cpp | 26 ++++++++++++++++++--------
+ 1 file changed, 18 insertions(+), 8 deletions(-)
+
+diff --git a/Source/Core/Core/HW/GBACore.cpp b/Source/Core/Core/HW/GBACore.cpp
+index 2c1fbfa35..4d5364742 100644
+--- a/Source/Core/Core/HW/GBACore.cpp
++++ b/Source/Core/Core/HW/GBACore.cpp
+@@ -529,15 +529,25 @@ void Core::AddCallbacks()
+     if (auto host = core->m_host.lock())
+       host->FrameEnded(core->m_video_buffer);
+ #if defined(__LIBUSB__) || defined(ANDROID)
+-    // A real GBA acting as a controller shows this machine's own GBA screen.
+-    if (core->m_device_number != Config::GBPLAYER_GBA_INDEX &&
+-        GBLink::Manager::Get().WantsMirrorFrames(static_cast<int>(core->m_device_number)) &&
+-        (!NetPlay::IsNetPlayRunning() ||
+-         NetPlay::GetPadDetails(static_cast<int>(core->m_device_number)).is_local))
++    // A real GBA acting as a controller shows this machine's own GBA screen. The adapter is
++    // keyed like its keys are (GBAPad asks with the local pad number), which in netplay is not
++    // the in-game port: a host sitting at port 2 is local pad 0.
++    if (core->m_device_number != Config::GBPLAYER_GBA_INDEX)
+     {
+-      GBLink::Manager::Get().SubmitMirrorFrame(static_cast<int>(core->m_device_number),
+-                                               core->m_video_buffer.data(),
+-                                               core->m_video_buffer.size());
++      int link_device = static_cast<int>(core->m_device_number);
++      bool mine = true;
++      if (NetPlay::IsNetPlayRunning())
++      {
++        const auto details = NetPlay::GetPadDetails(link_device);
++        mine = details.is_local;
++        link_device = details.local_pad;
++      }
++      if (mine && link_device >= 0 && link_device < 4 &&
++          GBLink::Manager::Get().WantsMirrorFrames(link_device))
++      {
++        GBLink::Manager::Get().SubmitMirrorFrame(link_device, core->m_video_buffer.data(),
++                                                 core->m_video_buffer.size());
++      }
+     }
+ #endif
+   };
+-- 
+2.43.0
+
