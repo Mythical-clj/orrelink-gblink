@@ -52,6 +52,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           path: ci
+          fetch-depth: 0  # the pinned date below needs the history of patches/
       - name: Construct xd-netplay branch
         id: mk
         run: |
