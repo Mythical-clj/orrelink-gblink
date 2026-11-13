@@ -54,7 +54,7 @@ private:
 
   // Netplay (and the lag test): what the game hears comes from the lag model. Model index i is
   // command number i + 1 (m_seq) on every machine.
-  static constexpr u64 kLagMs = 80;
+  static constexpr u64 kLagMs = 100;
   std::unique_ptr<JoyBusLagModel> m_model;
   u32 m_model_index = 0;
   std::vector<JoyBusLagModel::Reply> m_real;  // the owner's: the GBA's replies so far
