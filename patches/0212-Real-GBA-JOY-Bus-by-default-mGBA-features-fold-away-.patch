@@ -1,0 +1,539 @@
+From b192e4d9581fb17912fdf8326fc0a93b70175993 Mon Sep 17 00:00:00 2001
+From: t <t@t>
+Date: Fri, 13 Nov 2026 11:19:51 -0600
+Subject: [PATCH] Real GBA (JOY Bus) by default; mGBA features fold away; JOY
+ Bus trace
+
+- "Real GBA" is on by default and falls back to the integrated GBAs when no
+  adapter has the JOY Bus firmware; such adapters keep working as GB-Links.
+- The launcher puts the controller/mirror options, Save Files and Team sharing
+  in a collapsible "mGBA emulation" section and opens at a 2:3 shape.
+- Logs/JoyTrace.txt records every JOY Bus command and reply with emulated time,
+  to design and check the netplay model offline.
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01764cASb9aVVk2m6JupRMj5
+---
+ Source/Core/Core/Config/MainSettings.cpp      |   2 +-
+ Source/Core/Core/HW/SI/SI_DeviceGBALink.cpp   | 129 +++++++++++++++++-
+ Source/Core/Core/HW/SI/SI_DeviceGBALink.h     |   7 +-
+ Source/Core/Core/NetPlayServer.cpp            |   4 +-
+ .../DolphinQt/XDNetplay/XDLauncherDialog.cpp  |  60 ++++++--
+ .../DolphinQt/XDNetplay/XDLauncherDialog.h    |   3 +
+ .../DolphinQt/XDNetplay/XDNetplayConfig.cpp   |   9 +-
+ .../Core/InputCommon/GBLink/GBLinkManager.cpp |  23 +++-
+ .../Core/InputCommon/GBLink/GBLinkManager.h   |   5 +
+ Source/Core/UICommon/UICommon.cpp             |   4 +
+ 10 files changed, 221 insertions(+), 25 deletions(-)
+
+diff --git a/Source/Core/Core/Config/MainSettings.cpp b/Source/Core/Core/Config/MainSettings.cpp
+index ca3b289a5..2ec57e64f 100644
+--- a/Source/Core/Core/Config/MainSettings.cpp
++++ b/Source/Core/Core/Config/MainSettings.cpp
+@@ -441,7 +441,7 @@ const Info<int> MAIN_XD_TIMER_TURN_SECONDS{{System::Main, "XDNetplay", "TimerTur
+ const Info<int> MAIN_XD_TIMER_GAME_MINUTES{{System::Main, "XDNetplay", "TimerGameMinutes"}, 20};
+ const Info<std::string> MAIN_XD_IMPORTED_SAVE_2{{System::Main, "XDNetplay", "ImportedSave2"}, ""};
+ const Info<std::string> MAIN_XD_IMPORTED_SAVE_3{{System::Main, "XDNetplay", "ImportedSave3"}, ""};
+-const Info<bool> MAIN_GBLINK_JOYBUS{{System::Main, "XDNetplay", "GBLinkJoybus"}, false};
++const Info<bool> MAIN_GBLINK_JOYBUS{{System::Main, "XDNetplay", "GBLinkJoybus"}, true};
+ const Info<int> MAIN_XD_IMPORTED_GAME_2{{System::Main, "XDNetplay", "ImportedGame2"}, 0};
+ const Info<int> MAIN_XD_IMPORTED_GAME_3{{System::Main, "XDNetplay", "ImportedGame3"}, 0};
+ const Info<std::string> MAIN_XD_SUBMIT_TEAM_B64{{System::Main, "XDNetplay", "SubmitTeamB64"}, ""};
+diff --git a/Source/Core/Core/HW/SI/SI_DeviceGBALink.cpp b/Source/Core/Core/HW/SI/SI_DeviceGBALink.cpp
+index 4bf3b96a9..81f159cae 100644
+--- a/Source/Core/Core/HW/SI/SI_DeviceGBALink.cpp
++++ b/Source/Core/Core/HW/SI/SI_DeviceGBALink.cpp
+@@ -9,6 +9,10 @@
+ 
+ #include <fmt/format.h>
+ 
++#include <fstream>
++#include <mutex>
++
++#include "Common/FileUtil.h"
+ #include "Core/Config/MainSettings.h"
+ #include "Core/CoreTiming.h"
+ #include "Core/NetPlayProto.h"
+@@ -32,8 +36,125 @@ void JoyLog(const std::string& line)
+   (void)line;
+ #endif
+ }
++
++// Logs/JoyTrace.txt: every JOY Bus command of the session and its reply, with the emulated time,
++// so the game's protocol can be studied (and a netplay model checked against it) offline. One
++// line per command: port, emulated ticks, command, the word written or "-", the reply or "--";
++// a status asked again with the same reply only counts up ("xN" on the line that ends the run).
++class JoyTrace
++{
++public:
++  static JoyTrace& Get()
++  {
++    static JoyTrace trace;
++    return trace;
++  }
++
++  void Open(u64 ticks_per_second)
++  {
++    std::lock_guard lock(m_mutex);
++    if (m_users++ > 0)
++      return;
++    m_file.close();
++    m_file.clear();
++    File::OpenFStream(m_file, File::GetUserPath(D_LOGS_IDX) + "JoyTrace.txt",
++                      std::ios::out | std::ios::trunc);
++    m_bytes = 0;
++    m_repeat = {};
++    Write(fmt::format("# port ticks cmd word reply  ({} ticks per second)\n", ticks_per_second));
++  }
++
++  void Close()
++  {
++    std::lock_guard lock(m_mutex);
++    if (m_users == 0 || --m_users > 0)
++      return;
++    for (int port = 0; port < 4; port++)
++      FlushRepeat(port);
++    m_file.close();
++  }
++
++  void Add(int port, u64 ticks, u8 cmd, const u8* tx, const u8* rx, int got)
++  {
++    std::lock_guard lock(m_mutex);
++    if (!m_file.is_open() || m_bytes > kMaxBytes || port < 0 || port >= 4)
++      return;
++    std::string reply = "--";
++    if (got > 0)
++    {
++      reply.clear();
++      for (int i = 0; i < got; i++)
++        reply += fmt::format("{:02x}", rx[i]);
++    }
++    Repeat& rep = m_repeat[port];
++    if (cmd == 0x00 && rep.count > 0 && rep.reply == reply)
++    {
++      rep.count++;
++      rep.last_ticks = ticks;
++      return;
++    }
++    FlushRepeat(port);
++    if (cmd == 0x00)
++    {
++      rep.count = 1;
++      rep.reply = reply;
++      rep.first_ticks = rep.last_ticks = ticks;
++      return;
++    }
++    Write(fmt::format("{} {} {:02x} {} {}\n", port + 1, ticks, cmd,
++                      cmd == 0x15 ? fmt::format("{:02x}{:02x}{:02x}{:02x}", tx[1], tx[2], tx[3],
++                                                tx[4]) :
++                                    std::string("-"),
++                      reply));
++  }
++
++private:
++  static constexpr u64 kMaxBytes = 48 * 1024 * 1024;
++  struct Repeat
++  {
++    u32 count = 0;
++    u64 first_ticks = 0, last_ticks = 0;
++    std::string reply;
++  };
++
++  void FlushRepeat(int port)
++  {
++    Repeat& rep = m_repeat[port];
++    if (rep.count == 0)
++      return;
++    Write(rep.count == 1 ?
++              fmt::format("{} {} 00 - {}\n", port + 1, rep.first_ticks, rep.reply) :
++              fmt::format("{} {} 00 - {} x{} {}\n", port + 1, rep.first_ticks, rep.reply,
++                          rep.count, rep.last_ticks));
++    rep.count = 0;
++  }
++
++  void Write(const std::string& text)
++  {
++    if (!m_file.is_open())
++      return;
++    m_file << text;
++    m_bytes += text.size();
++  }
++
++  std::mutex m_mutex;
++  std::ofstream m_file;
++  u64 m_bytes = 0;
++  int m_users = 0;
++  std::array<Repeat, 4> m_repeat;
++};
++
+ }  // namespace
+ 
++bool GBLinkJoybusAvailable()
++{
++#ifdef ORRELINK_JOYBUS
++  return GBLink::Manager::Get().JoyReadyCount() > 0;
++#else
++  return false;
++#endif
++}
++
+ CSIDevice_GBALink::CSIDevice_GBALink(Core::System& system, SIDevices device, int device_number)
+     : ISIDevice(system, device, device_number), m_stat_time(std::chrono::steady_clock::now())
+ {
+@@ -44,12 +165,16 @@ CSIDevice_GBALink::CSIDevice_GBALink(Core::System& system, SIDevices device, int
+ #endif
+   JoyLog(fmt::format("joybus port {}: real GBA device created{}", m_device_number + 1,
+                      NetPlay::IsNetPlayRunning() ? " (netplay)" : ""));
++  JoyTrace::Get().Open(m_system.GetSystemTimers().GetTicksPerSecond());
+ }
+ 
+ CSIDevice_GBALink::~CSIDevice_GBALink()
+ {
+   LogStats();
+-#ifdef ORRELINK_JOYBUS
++  JoyTrace::Get().Close();
++#ifdef ANDROID
++  GBLink::Manager::Get().SetJoybus(false);
++#elif defined(ORRELINK_JOYBUS)
+   GBLink::Manager::Get().SetJoybus(Config::Get(Config::MAIN_GBLINK_JOYBUS));
+ #endif
+ }
+@@ -79,6 +204,7 @@ int CSIDevice_GBALink::RunBuffer(u8* buffer, int request_length)
+       return -1;  // not a GBA command: a GBA says nothing
+     }
+ 
++    std::copy(buffer, buffer + 5, m_tx.begin());
+     m_seq++;
+     m_owner = NetPlay::JoyOwner(m_device_number);
+     m_link_device = NetPlay::GbaInputPadFor(m_device_number);
+@@ -161,6 +287,7 @@ int CSIDevice_GBALink::RunBuffer(u8* buffer, int request_length)
+     }
+     if (got <= 0)
+       m_stat_none++;
++    JoyTrace::Get().Add(m_device_number, m_timestamp_sent, m_tx[0], m_tx.data(), rx, got);
+ 
+     // The first commands one by one (a status only when its reply changes), then the totals.
+     if (m_trace_left > 0)
+diff --git a/Source/Core/Core/HW/SI/SI_DeviceGBALink.h b/Source/Core/Core/HW/SI/SI_DeviceGBALink.h
+index 675e32819..cae8fe340 100644
+--- a/Source/Core/Core/HW/SI/SI_DeviceGBALink.h
++++ b/Source/Core/Core/HW/SI/SI_DeviceGBALink.h
+@@ -11,6 +11,10 @@
+ 
+ namespace SerialInterface
+ {
++// True when a GB-Link adapter with the JOY Bus firmware is plugged in, so "Real GBA" can be the
++// default without leaving a machine that has none without GBAs.
++bool GBLinkJoybusAvailable();
++
+ // A real GBA on a GB-Link adapter in JOY Bus mode (InputCommon/GBLink): every JOY Bus command the
+ // game sends goes to the GBA, which runs its own cartridge, and the GBA's reply goes back to the
+ // game. In netplay the machine that owns the port talks to its GBA and sends each reply to the
+@@ -52,6 +56,7 @@ private:
+   double m_stat_net_ms = 0, m_stat_net_max = 0;
+   u32 m_stat_net_waits = 0;
+   std::array<u8, 5> m_last_logged{};
+-  u32 m_trace_left = 400;  // the first commands are logged one by one
++  std::array<u8, 5> m_tx{};
++  u32 m_trace_left = 60;  // the first commands are logged one by one (all go to JoyTrace.txt)
+ };
+ }  // namespace SerialInterface
+diff --git a/Source/Core/Core/NetPlayServer.cpp b/Source/Core/Core/NetPlayServer.cpp
+index b3f19517b..f8e787368 100644
+--- a/Source/Core/Core/NetPlayServer.cpp
++++ b/Source/Core/Core/NetPlayServer.cpp
+@@ -42,6 +42,7 @@
+ #include "Core/Boot/Boot.h"
+ #include "Core/Config/GraphicsSettings.h"
+ #include "Core/Config/MainSettings.h"
++#include "Core/HW/SI/SI_DeviceGBALink.h"
+ #include "Core/Config/NetplaySettings.h"
+ #include "Core/Config/SYSCONFSettings.h"
+ #include "Core/Config/SessionSettings.h"
+@@ -2254,7 +2255,8 @@ bool NetPlayServer::SetupNetSettings()
+   // seats' staged teams: a Multi start, or a 1v1 start whose host watches.
+   settings.xd_boot_copies = m_xd_multi_start || m_xd_watch_start;
+   // Real GBAs on GB-Link adapters: 1v1 only (a Multi start keeps the integrated GBAs).
+-  settings.gba_joybus = Config::Get(Config::MAIN_GBLINK_JOYBUS) && !m_xd_multi_start;
++  settings.gba_joybus = Config::Get(Config::MAIN_GBLINK_JOYBUS) && !m_xd_multi_start &&
++                        SerialInterface::GBLinkJoybusAvailable();
+   {
+     const bool mixed = RoomMixesCpuArchitectures();
+     const bool safest = Config::Get(Config::NETPLAY_FORCE_COMMON_CORE_ON_MIXED_ARCH);
+diff --git a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
+index 578983511..c43d64852 100644
+--- a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
++++ b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
+@@ -34,6 +34,7 @@
+ #include <QJsonObject>
+ #include <QRegularExpression>
+ #include <QSettings>
++#include <QToolButton>
+ #include <QLabel>
+ #include <QLineEdit>
+ #include <QListWidget>
+@@ -424,8 +425,21 @@ void XDLauncherDialog::CreateMainLayout()
+   // DisposableSave swaps in for the room's duration.
+   // GB-Link: a real GBA plugged into this PC. Plays as the controller (no setup beyond
+   // powering the GBA on with START+SELECT held) and can hand over its cartridge save.
+-  auto* gblink_box = new QGroupBox(tr("Real GBA"));
++  auto* gblink_box = new QGroupBox(tr("GB-Link"));
+   auto* gblink_layout = new QGridLayout;
++  // Everything that belongs to the integrated (mGBA) GBAs lives in one section that folds away:
++  // with "Real GBA" on, none of it is needed.
++  m_mgba_toggle = new QToolButton;
++  m_mgba_toggle->setText(tr("mGBA emulation"));
++  m_mgba_toggle->setCheckable(true);
++  m_mgba_toggle->setAutoRaise(true);
++  m_mgba_toggle->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
++  m_mgba_toggle->setArrowType(Qt::RightArrow);
++  m_mgba_section = new QWidget;
++  auto* mgba_layout = new QVBoxLayout(m_mgba_section);
++  mgba_layout->setContentsMargins(0, 0, 0, 0);
++  auto* agent_box = new QGroupBox(tr("GBA as controller"));
++  auto* agent_layout = new QGridLayout;
+   m_gblink_status = MakeNoteLabel(QString());
+   m_gblink_full_read_check = new QCheckBox(tr("Read full save"));
+   m_gblink_full_read_check->setChecked(false);
+@@ -481,21 +495,26 @@ void XDLauncherDialog::CreateMainLayout()
+   }
+   m_gblink_read_row->setVisible(false);
+   adapters_layout->addWidget(m_gblink_read_row);
+-  gblink_layout->addLayout(adapters_layout, 5, 0);
+-  gblink_layout->addWidget(m_gblink_pad_check, 1, 0);
+-  gblink_layout->addWidget(m_gblink_menu_check, 2, 0);
++  agent_layout->addLayout(adapters_layout, 4, 0);
++  agent_layout->addWidget(m_gblink_pad_check, 0, 0);
++  agent_layout->addWidget(m_gblink_menu_check, 1, 0);
+   m_gblink_mirror_check = new QCheckBox(tr("Mirror GBA screen"));
+   m_gblink_mirror_check->setChecked(true);
+     m_gblink_mirror_check->setToolTip(tr("Show game on GBA"));
+-  gblink_layout->addWidget(m_gblink_mirror_check, 3, 0);
+-  gblink_layout->addWidget(m_gblink_full_read_check, 4, 0);
+-  m_gblink_joybus_check = new QCheckBox(tr("Real cartridge (test)"));
++  agent_layout->addWidget(m_gblink_mirror_check, 2, 0);
++  agent_layout->addWidget(m_gblink_full_read_check, 3, 0);
++  agent_layout->setColumnStretch(0, 1);
++  agent_box->setLayout(agent_layout);
++  mgba_layout->addWidget(agent_box);
++  m_gblink_joybus_check = new QCheckBox(tr("Real GBA"));
+   m_gblink_joybus_check->setChecked(Config::Get(Config::MAIN_GBLINK_JOYBUS));
+-  m_gblink_joybus_check->setToolTip(tr("JOY Bus firmware, no emulated GBA"));
+-  gblink_layout->addWidget(m_gblink_joybus_check, 5, 0);
++  m_gblink_joybus_check->setToolTip(tr("Cartridge over JOY Bus"));
++  gblink_layout->addWidget(m_gblink_joybus_check, 1, 0);
+   gblink_layout->setColumnStretch(0, 1);
+   gblink_box->setLayout(gblink_layout);
+   layout->addWidget(gblink_box);
++  layout->addWidget(m_mgba_toggle);
++  layout->addWidget(m_mgba_section);
+ 
+   auto* saves_box = new QGroupBox(tr("Save Files"));
+   auto* saves_layout = new QGridLayout;
+@@ -520,7 +539,7 @@ void XDLauncherDialog::CreateMainLayout()
+   add_save_row(&m_save_row_port3, tr("Guest-slot save (GBA port 3):"));
+   saves_layout->setColumnStretch(1, 1);
+   saves_box->setLayout(saves_layout);
+-  layout->addWidget(saves_box);
++  mgba_layout->addWidget(saves_box);
+ 
+   auto* team_box = new QGroupBox(tr("Team sharing"));
+   auto* team_layout = new QGridLayout;
+@@ -543,7 +562,7 @@ void XDLauncherDialog::CreateMainLayout()
+   // site, so they only appear once a hub URL has been set (QSettings
+   // "xdnetplay/huburl").
+   team_box->setVisible(!QSettings().value(QStringLiteral("xdnetplay/huburl")).toString().isEmpty());
+-  layout->addWidget(team_box);
++  mgba_layout->addWidget(team_box);
+ 
+   auto* battle_box = new QGroupBox(tr("Battle"));
+   auto* battle_layout = new QGridLayout;
+@@ -779,7 +798,10 @@ void XDLauncherDialog::FitToScreen()
+   const QSize preferred = sizeHint();
+   const int max_height =
+       std::max(minimumSizeHint().height(), avail.height() - WINDOW_CHROME_HEIGHT);
+-  resize(preferred.width(), std::min(preferred.height(), max_height));
++  // A 2:3 shape (480 x 720 or larger), not the layout's narrow minimum.
++  const int height = std::min(std::max(preferred.height(), 720), max_height);
++  const int width = std::min(std::max({preferred.width(), 480, height * 2 / 3}), avail.width());
++  resize(width, height);
+ 
+   QRect r(QPoint(), size());
+   r.moveCenter(parentWidget() ? parentWidget()->frameGeometry().center() : avail.center());
+@@ -1004,6 +1026,20 @@ void XDLauncherDialog::ConnectWidgets()
+     GBLink::Manager::Get().SetJoybus(on);
+ #endif
+   });
++  connect(m_mgba_toggle, &QToolButton::toggled, this, [this](bool open) {
++    m_mgba_section->setVisible(open);
++    m_mgba_toggle->setArrowType(open ? Qt::DownArrow : Qt::RightArrow);
++    QSettings().setValue(QStringLiteral("xdnetplay/mgba_section_open"), open);
++  });
++  {
++    // Open by default only where it is the way to play: "Real GBA" off.
++    const bool open = QSettings()
++                          .value(QStringLiteral("xdnetplay/mgba_section_open"),
++                                 !Config::Get(Config::MAIN_GBLINK_JOYBUS))
++                          .toBool();
++    m_mgba_section->setVisible(open);
++    m_mgba_toggle->setChecked(open);
++  }
+   m_gblink_timer = new QTimer(this);
+   connect(m_gblink_timer, &QTimer::timeout, this, &XDLauncherDialog::RefreshGbLinkStatus);
+   m_gblink_timer->start(500);
+diff --git a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.h b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.h
+index 475f390db..94f041364 100644
+--- a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.h
++++ b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.h
+@@ -14,6 +14,7 @@
+ #include "UICommon/NetPlayIndex.h"
+ 
+ class QCheckBox;
++class QToolButton;
+ class QComboBox;
+ class QLabel;
+ class QLineEdit;
+@@ -147,6 +148,8 @@ private:
+   QCheckBox* m_gblink_full_read_check = nullptr;
+   QCheckBox* m_gblink_menu_check = nullptr;
+   QCheckBox* m_gblink_joybus_check = nullptr;
++  QToolButton* m_mgba_toggle = nullptr;
++  QWidget* m_mgba_section = nullptr;
+   QCheckBox* m_gblink_mirror_check = nullptr;
+   QPushButton* m_share_team_button = nullptr;
+   QPushButton* m_load_team_button = nullptr;
+diff --git a/Source/Core/DolphinQt/XDNetplay/XDNetplayConfig.cpp b/Source/Core/DolphinQt/XDNetplay/XDNetplayConfig.cpp
+index 86fb54301..f48b1c014 100644
+--- a/Source/Core/DolphinQt/XDNetplay/XDNetplayConfig.cpp
++++ b/Source/Core/DolphinQt/XDNetplay/XDNetplayConfig.cpp
+@@ -141,14 +141,15 @@ bool EnsureGbaConfig(bool multi_solo)
+   // multi battle, which needs the integrated GBAs.
+   // Port 2 takes the first adapter; port 3 is a real GBA only when there is a second adapter,
+   // and an integrated GBA otherwise, so one real GBA can still battle.
++  // No adapter with the JOY Bus firmware: integrated GBAs, whatever the setting (on by default).
+   const bool joybus = Config::Get(Config::MAIN_GBLINK_JOYBUS) && !multi_solo;
+-  size_t adapters = 2;
++  size_t adapters = 0;
+ #if defined(__LIBUSB__) && !defined(ANDROID)
+-  adapters = GBLink::Manager::Get().GetAdapters().size();
++  adapters = static_cast<size_t>(GBLink::Manager::Get().JoyReadyCount());
+ #endif
+   Config::SetBaseOrCurrent(Config::GetInfoForSIDevice(1),
+-                           joybus ? SerialInterface::SIDEVICE_GC_GBA_GBLINK :
+-                                    SerialInterface::SIDEVICE_GC_GBA_EMULATED);
++                           joybus && adapters >= 1 ? SerialInterface::SIDEVICE_GC_GBA_GBLINK :
++                                                     SerialInterface::SIDEVICE_GC_GBA_EMULATED);
+   Config::SetBaseOrCurrent(Config::GetInfoForSIDevice(2),
+                            joybus && adapters >= 2 ? SerialInterface::SIDEVICE_GC_GBA_GBLINK :
+                                                      SerialInterface::SIDEVICE_GC_GBA_EMULATED);
+diff --git a/Source/Core/InputCommon/GBLink/GBLinkManager.cpp b/Source/Core/InputCommon/GBLink/GBLinkManager.cpp
+index c8b9cf835..91c5cde20 100644
+--- a/Source/Core/InputCommon/GBLink/GBLinkManager.cpp
++++ b/Source/Core/InputCommon/GBLink/GBLinkManager.cpp
+@@ -297,6 +297,8 @@ void Link::RunJoybus(UsbLink& usb)
+         seen += " [" + Hex(state, state_len, 16) + "]";
+     }
+   }
++  if (!joy_ok && (quitting() || usb.Lost()))
++    return;
+   if (!joy_ok)
+   {
+     uint8_t fw[16] = {};
+@@ -305,9 +307,8 @@ void Link::RunJoybus(UsbLink& usb)
+       fw_len = usb.ReadBytes(fw, sizeof(fw), 300);
+     LogLine(fmt::format("JOY Bus: no answer to GetState. Other packets:{}. Firmware info: {}",
+                         seen.empty() ? " none" : seen, fw_len ? Hex(fw, fw_len) : "none"));
+-    SetStatus(State::Error, "JOY Bus needs test firmware");
+-    for (int i = 0; i < 50 && !quitting() && m_owner.IsJoybus(); i++)
+-      WaitFor(100);
++    // Not a JOY Bus firmware: this adapter carries on as a GB-Link (controller, mirror, reads).
++    m_joy_unsupported = true;
+     return;
+   }
+   LogLine(fmt::format("JOY Bus mode on: protocol {}, wiring {}, bits {} us", state[1], state[2],
+@@ -548,7 +549,7 @@ void Link::Run()
+       // Put the adapter in GB-Link mode with the multiboot timing before polling for the GBA;
+       // a freshly plugged adapter reads 0x00000000 until this is done. (Not when it is about to
+       // be a GameCube port: two mode changes in a row can leave the firmware in the first.)
+-      if (!m_owner.IsJoybus())
++      if (!m_owner.IsJoybus() || m_joy_unsupported)
+       {
+         usb.SetMode(MODE_GB_LINK);
+         std::this_thread::sleep_for(std::chrono::milliseconds(100));
+@@ -561,7 +562,7 @@ void Link::Run()
+     }
+ 
+     // ---- JOY Bus mode: the adapter is a GameCube port, the GBA runs its cartridge ----------
+-    if (m_owner.IsJoybus())
++    if (m_owner.IsJoybus() && !m_joy_unsupported)
+     {
+       m_pad_live = false;
+       RunJoybus(usb);
+@@ -1119,6 +1120,18 @@ void Manager::SetPortSetting(const std::string& key, int setting)
+   }
+ }
+ 
++int Manager::JoyReadyCount() const
++{
++  int count = 0;
++  for (const auto& slot : m_links)
++  {
++    const Link* l = slot.load();
++    if (l && l->IsJoyReady())
++      count++;
++  }
++  return count;
++}
++
+ void Manager::SetJoybus(bool on)
+ {
+   if (m_joybus.exchange(on) != on)
+diff --git a/Source/Core/InputCommon/GBLink/GBLinkManager.h b/Source/Core/InputCommon/GBLink/GBLinkManager.h
+index 096b6361e..91174704c 100644
+--- a/Source/Core/InputCommon/GBLink/GBLinkManager.h
++++ b/Source/Core/InputCommon/GBLink/GBLinkManager.h
+@@ -97,6 +97,7 @@ public:
+   int JoyEnd(uint8_t* rx, double* usb_ms);
+   // The port this adapter's GBA serves in JOY Bus mode, -1 while none has asked.
+   int JoyDevice() const { return m_joy_device; }
++  bool IsJoyReady() const { return m_joy_ready; }
+ 
+ private:
+   struct DumpRequest
+@@ -150,6 +151,8 @@ private:
+   uint32_t m_joy_next_id = 0;
+   std::condition_variable m_joy_cv;
+   std::atomic<bool> m_joy_ready{false};
++  // This adapter's firmware has no JOY Bus mode: it keeps working the GB-Link way.
++  std::atomic<bool> m_joy_unsupported{false};
+   std::atomic<int> m_joy_device{-1};
+ };
+ 
+@@ -207,6 +210,8 @@ public:
+   // the JOY Bus test firmware). The controller, mirror and cartridge reads are off meanwhile.
+   void SetJoybus(bool on);
+   bool IsJoybus() const { return m_joybus; }
++  // Adapters that are GameCube ports right now (JOY Bus firmware, mode on).
++  int JoyReadyCount() const;
+   bool JoyBegin(int device, const uint8_t* tx, int tx_len, int rx_len);
+   int JoyEnd(int device, uint8_t* rx, double* usb_ms);
+   // A line in GBLink.log.
+diff --git a/Source/Core/UICommon/UICommon.cpp b/Source/Core/UICommon/UICommon.cpp
+index 00fe8e118..3690b64d4 100644
+--- a/Source/Core/UICommon/UICommon.cpp
++++ b/Source/Core/UICommon/UICommon.cpp
+@@ -190,7 +190,11 @@ void InitControllers(const WindowSystemInfo& wsi)
+   Pad::Initialize();
+   Pad::InitializeGBA();
+ #if defined(__LIBUSB__) || defined(ANDROID)
++#ifndef ANDROID
++  // (Android has no "Real GBA" local play yet: its adapters become GameCube ports only for a
++  // netplay room that asks for them.)
+   GBLink::Manager::Get().SetJoybus(Config::Get(Config::MAIN_GBLINK_JOYBUS));
++#endif
+   GBLink::Manager::Get().Start();
+ #endif
+   Keyboard::Initialize();
+-- 
+2.43.0
+
