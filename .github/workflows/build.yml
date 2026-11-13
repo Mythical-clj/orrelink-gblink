@@ -571,6 +571,7 @@ jobs:
           SUBSYSTEM=="usb", ATTRS{idVendor}=="2fe3", TAG+="uaccess"
           SUBSYSTEM=="usb", ATTRS{idVendor}=="cafe", TAG+="uaccess"
           SUBSYSTEM=="usb", ATTRS{idVendor}=="239a", TAG+="uaccess"
+          SUBSYSTEM=="usb", ATTRS{idVendor}=="1209", ATTRS{idProduct}=="b011", TAG+="uaccess"
           RULES
           ls -la out
       - uses: actions/upload-artifact@v4
