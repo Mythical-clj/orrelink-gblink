@@ -293,6 +293,9 @@ extern const Info<std::string> MAIN_XD_IMPORTED_SAVE_2;  // GBA port 2 (device 1
 extern const Info<std::string> MAIN_XD_IMPORTED_SAVE_3;  // GBA port 3 (device 2)
 // The cartridge game the imported team came from (0 = Emerald/unknown, 1 = FireRed/LeafGreen,
 // 2 = Ruby/Sapphire). The save itself is always rebuilt as Emerald; this only picks the trainer.
+// GB-Link adapters act as GameCube ports for real GBAs running their cartridges (JOY Bus test
+// firmware), instead of the integrated GBAs. A netplay room follows the host's setting.
+extern const Info<bool> MAIN_GBLINK_JOYBUS;
 extern const Info<int> MAIN_XD_IMPORTED_GAME_2;
 extern const Info<int> MAIN_XD_IMPORTED_GAME_3;
 

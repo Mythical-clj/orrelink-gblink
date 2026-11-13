@@ -190,6 +190,7 @@ void InitControllers(const WindowSystemInfo& wsi)
   Pad::Initialize();
   Pad::InitializeGBA();
 #if defined(__LIBUSB__) || defined(ANDROID)
+  GBLink::Manager::Get().SetJoybus(Config::Get(Config::MAIN_GBLINK_JOYBUS));
   GBLink::Manager::Get().Start();
 #endif
   Keyboard::Initialize();

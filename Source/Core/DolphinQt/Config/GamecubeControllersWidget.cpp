@@ -42,6 +42,7 @@ static constexpr std::array s_gc_types = {
     SIDeviceName{SerialInterface::SIDEVICE_GC_GBA, _trans("GBA (TCP)")},
     SIDeviceName{SerialInterface::SIDEVICE_GC_KEYBOARD, _trans("Keyboard Controller")},
     SIDeviceName{SerialInterface::SIDEVICE_AM_BASEBOARD, _trans("Triforce Baseboard")},
+    SIDeviceName{SerialInterface::SIDEVICE_GC_GBA_GBLINK, _trans("GBA (GB-Link cartridge)")},
 #ifdef HAS_LIBMGBA
     // Port 1 only; must stay the last entry.
     SIDeviceName{SerialInterface::SIDEVICE_GC_GBA_XDMULTI, _trans("XD Multi (Controller + GBA)")},
@@ -149,7 +150,8 @@ void GamecubeControllersWidget::OnGCTypeChanged(size_t index)
   const SerialInterface::SIDevices si_device =
       FromGCMenuIndex(m_gc_controller_boxes[index]->currentIndex());
   m_gc_buttons[index]->setEnabled(si_device != SerialInterface::SIDEVICE_NONE &&
-                                  si_device != SerialInterface::SIDEVICE_GC_GBA);
+                                  si_device != SerialInterface::SIDEVICE_GC_GBA &&
+                                  si_device != SerialInterface::SIDEVICE_GC_GBA_GBLINK);
 }
 
 void GamecubeControllersWidget::OnGCPadConfigure(size_t index)

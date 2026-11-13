@@ -104,6 +104,8 @@ static bool s_si_poll_batching = false;
 static std::array<std::atomic<s8>, 4> s_gba_input_pad{};
 static std::array<std::atomic<bool>, 4> s_gc_pad_plays{};
 static std::atomic<bool> s_gba_input_active{false};
+// JoyOwner: per SI channel, 0 nobody / 1 this machine / 2 another machine. Same lifetime.
+static std::array<std::atomic<s8>, 4> s_joy_owner{};
 
 static void ClearGbaInputPads()
 {
@@ -112,6 +114,8 @@ static void ClearGbaInputPads()
     pad.store(-1, std::memory_order_relaxed);
   for (auto& plays : s_gc_pad_plays)
     plays.store(false, std::memory_order_relaxed);
+  for (auto& owner : s_joy_owner)
+    owner.store(0, std::memory_order_relaxed);
 }
 
 // XD netplay peer-vanish watchdog -- see WaitOnRemote() for the full story.
@@ -558,6 +562,10 @@ void NetPlayClient::OnData(sf::Packet& packet)
 
   case MessageID::GBAConfig:
     OnGBAConfig(packet);
+    break;
+
+  case MessageID::JoyReply:
+    OnJoyReply(packet);
     break;
 
   case MessageID::WiimoteMapping:
@@ -1333,6 +1341,7 @@ void NetPlayClient::OnStartGame(sf::Packet& packet)
     // XD multi battles: after xd_rng_seed, last of all (NetPlayServer::StartGame).
     packet >> m_net_settings.xd_multi_p1;
     packet >> m_net_settings.xd_boot_copies;
+    packet >> m_net_settings.gba_joybus;
 
     // Never let PowerPC.cpp's silent fallback pick a core nobody announced. A host on the
     // other architecture names a JIT this build cannot construct: with the XD clock on that
@@ -1463,6 +1472,11 @@ void NetPlayClient::OnStartGame(sf::Packet& packet)
   m_chase_next = 0;
   m_chase_count = 0;
   m_chase_last_reanchor = {};
+  {
+    std::lock_guard lk(m_joy_mutex);
+    for (auto& queue : m_joy_replies)
+      queue.clear();
+  }
   // Which local pad drives each of this machine's GBAs, for the Android touch overlay. The pad
   // map is final here.
   if (m_local_player)
@@ -1475,6 +1489,8 @@ void NetPlayClient::OnStartGame(sf::Packet& packet)
       const bool mine = m_net_settings.gba_config[ch].enabled && owned;
       s_gba_input_pad[ch].store(mine ? static_cast<s8>(InGamePadToLocalPad(ch)) : s8{-1},
                                 std::memory_order_relaxed);
+      const bool anyone = m_net_settings.gba_config[ch].enabled && m_net_settings.pad_map[ch] > 0;
+      s_joy_owner[ch].store(mine ? s8{1} : (anyone ? s8{2} : s8{0}), std::memory_order_relaxed);
       // A GameCube port of this machine's (the XD Multi port counts: it is a controller too).
       const int local = InGamePadToLocalPad(ch);
       if (owned && local >= 0 && local < 4 &&
@@ -4600,6 +4616,65 @@ void NetPlayClient::ComputeGameDigest(const SyncIdentifier& sync_identifier)
   });
 }
 
+// called from ---CPU--- thread
+void NetPlayClient::SendJoyReply(int port, u32 seq, int len, const u8* data)
+{
+  sf::Packet packet;
+  packet << MessageID::JoyReply;
+  packet << static_cast<PadIndex>(port) << seq << static_cast<u8>(len > 0 ? len : 0xFF);
+  for (int i = 0; i < 5; i++)
+    packet << static_cast<u8>(len > i ? data[i] : 0);
+  SendAsync(std::move(packet));
+}
+
+// called from ---NETPLAY--- thread
+void NetPlayClient::OnJoyReply(sf::Packet& packet)
+{
+  PadIndex map;
+  JoyReplyEntry entry;
+  u8 len;
+  packet >> map >> entry.seq >> len;
+  for (u8& byte : entry.data)
+    packet >> byte;
+  entry.len = len == 0xFF ? -1 : std::min<int>(len, 5);
+  if (map < 0 || static_cast<size_t>(map) >= m_joy_replies.size())
+    return;
+  {
+    std::lock_guard lk(m_joy_mutex);
+    m_joy_replies[map].push_back(entry);
+  }
+  m_joy_cv.notify_all();
+}
+
+// called from ---CPU--- thread
+bool NetPlayClient::WaitJoyReply(int port, u32 seq, int* len, u8* data)
+{
+  if (port < 0 || static_cast<size_t>(port) >= m_joy_replies.size())
+    return false;
+  std::unique_lock lk(m_joy_mutex);
+  auto& queue = m_joy_replies[port];
+  while (true)
+  {
+    // Replies come in the order the game asked, on every machine: anything older is left over
+    // from a command this machine gave up on.
+    while (!queue.empty() && queue.front().seq < seq)
+      queue.pop_front();
+    if (!queue.empty())
+    {
+      if (queue.front().seq != seq)
+        return false;  // this machine is behind the owner's count: the game states differ
+      const JoyReplyEntry entry = queue.front();
+      queue.pop_front();
+      *len = entry.len;
+      std::copy(entry.data.begin(), entry.data.end(), data);
+      return true;
+    }
+    if (!m_is_running.IsSet() || PadOwnerHasLeftRoom(port))
+      return false;
+    m_joy_cv.wait_for(lk, std::chrono::milliseconds(20));
+  }
+}
+
 const PadMappingArray& NetPlayClient::GetPadMapping() const
 {
   return m_net_settings.pad_map;
@@ -4689,6 +4764,29 @@ int GbaInputPadFor(int channel)
   if (!s_gba_input_active.load(std::memory_order_acquire))
     return channel;
   return s_gba_input_pad[channel].load(std::memory_order_relaxed);
+}
+
+int JoyOwner(int port)
+{
+  if (port < 0 || port >= static_cast<int>(s_joy_owner.size()))
+    return 0;
+  if (!s_gba_input_active.load(std::memory_order_acquire))
+    return netplay_client ? 0 : 1;
+  return s_joy_owner[port].load(std::memory_order_relaxed);
+}
+
+void SendJoyReply(int port, u32 seq, int len, const u8* data)
+{
+  std::lock_guard lk(crit_netplay_client);
+  if (netplay_client)
+    netplay_client->SendJoyReply(port, seq, len, data);
+}
+
+bool WaitJoyReply(int port, u32 seq, int* len, u8* data)
+{
+  // Not under crit_netplay_client: this waits for the network, and stopping must not wait for it.
+  NetPlayClient* const client = netplay_client;
+  return client && client->WaitJoyReply(port, seq, len, data);
 }
 
 bool LocalGcPadPlays(int local_pad)

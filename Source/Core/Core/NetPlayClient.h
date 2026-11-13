@@ -7,6 +7,8 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
+#include <deque>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -307,6 +309,10 @@ public:
 
   const PadMappingArray& GetPadMapping() const;
   const GBAConfigArray& GetGBAConfig() const;
+
+  // Real GBAs on GB-Link adapters (NetPlay::SendJoyReply / WaitJoyReply).
+  void SendJoyReply(int port, u32 seq, int len, const u8* data);
+  bool WaitJoyReply(int port, u32 seq, int* len, u8* data);
   const PadMappingArray& GetWiimoteMapping() const;
 
   void AdjustPadBufferSize(unsigned int size);
@@ -508,6 +514,17 @@ private:
   void OnPadMapping(sf::Packet& packet);
   void OnWiimoteMapping(sf::Packet& packet);
   void OnGBAConfig(sf::Packet& packet);
+  void OnJoyReply(sf::Packet& packet);
+
+  struct JoyReplyEntry
+  {
+    u32 seq = 0;
+    int len = -1;
+    std::array<u8, 5> data{};
+  };
+  std::mutex m_joy_mutex;
+  std::condition_variable m_joy_cv;
+  std::array<std::deque<JoyReplyEntry>, 4> m_joy_replies;
   void OnPadData(sf::Packet& packet);
   void OnPadHostData(sf::Packet& packet);
   void OnWiimoteData(sf::Packet& packet);

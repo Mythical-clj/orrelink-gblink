@@ -2182,7 +2182,8 @@ void MainWindow::ShowTASInput()
       m_gba_tas_input_windows[i]->activateWindow();
     }
     else if (si_device != SerialInterface::SIDEVICE_NONE &&
-             si_device != SerialInterface::SIDEVICE_GC_GBA)
+             si_device != SerialInterface::SIDEVICE_GC_GBA &&
+             si_device != SerialInterface::SIDEVICE_GC_GBA_GBLINK)
     {
       m_gc_tas_input_windows[i]->show();
       m_gc_tas_input_windows[i]->raise();

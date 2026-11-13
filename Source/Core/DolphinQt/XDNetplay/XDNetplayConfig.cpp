@@ -134,10 +134,14 @@ bool EnsureGbaConfig(bool multi_solo)
     if (Config::Get(Config::GetInfoForSIDevice(3)) == SerialInterface::SIDEVICE_GC_GBA_EMULATED)
       Config::SetBaseOrCurrent(Config::GetInfoForSIDevice(3), SerialInterface::SIDEVICE_NONE);
   }
-  Config::SetBaseOrCurrent(Config::GetInfoForSIDevice(1),
-                           SerialInterface::SIDEVICE_GC_GBA_EMULATED);
-  Config::SetBaseOrCurrent(Config::GetInfoForSIDevice(2),
-                           SerialInterface::SIDEVICE_GC_GBA_EMULATED);
+  // "Real cartridge": the GBAs are real ones on GB-Link adapters in JOY Bus mode. Not for a solo
+  // multi battle, which needs the integrated GBAs.
+  const SerialInterface::SIDevices gba_device =
+      Config::Get(Config::MAIN_GBLINK_JOYBUS) && !multi_solo ?
+          SerialInterface::SIDEVICE_GC_GBA_GBLINK :
+          SerialInterface::SIDEVICE_GC_GBA_EMULATED;
+  Config::SetBaseOrCurrent(Config::GetInfoForSIDevice(1), gba_device);
+  Config::SetBaseOrCurrent(Config::GetInfoForSIDevice(2), gba_device);
 
   // Cheats (the $XD OU Fixes code) are DERIVED state: BattleCustomizer::
   // PrepareForStart turns them on exactly when the session needs the AR engine

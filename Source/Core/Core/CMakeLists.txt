@@ -278,6 +278,8 @@ add_library(core
   HW/SI/SI_DeviceDanceMat.h
   HW/SI/SI_DeviceGBA.cpp
   HW/SI/SI_DeviceGBA.h
+  HW/SI/SI_DeviceGBALink.cpp
+  HW/SI/SI_DeviceGBALink.h
   HW/SI/SI_DeviceGCAdapter.cpp
   HW/SI/SI_DeviceGCAdapter.h
   HW/SI/SI_DeviceGCController.cpp
