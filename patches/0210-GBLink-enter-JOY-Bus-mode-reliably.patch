@@ -1,0 +1,111 @@
+From 9aab0fe851008e2fad3283138f7ac3bf6e138354 Mon Sep 17 00:00:00 2001
+From: t <t@t>
+Date: Fri, 13 Nov 2026 01:51:22 -0600
+Subject: [PATCH] GBLink: enter JOY Bus mode reliably
+
+Skip the GB-Link mode setup when the adapter is about to be a GameCube port,
+ask for the JOY Bus state several times while the firmware changes mode, read
+the status channel meanwhile, and log what came back when it never answers.
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01764cASb9aVVk2m6JupRMj5
+---
+ .../Core/InputCommon/GBLink/GBLinkManager.cpp | 69 +++++++++++++++----
+ 1 file changed, 54 insertions(+), 15 deletions(-)
+
+diff --git a/Source/Core/InputCommon/GBLink/GBLinkManager.cpp b/Source/Core/InputCommon/GBLink/GBLinkManager.cpp
+index f4eebb1b5..a72b60adf 100644
+--- a/Source/Core/InputCommon/GBLink/GBLinkManager.cpp
++++ b/Source/Core/InputCommon/GBLink/GBLinkManager.cpp
+@@ -256,22 +256,57 @@ void Link::RunJoybus(UsbLink& usb)
+     return -1;
+   };
+ 
++  // Into GameCube mode, then ask for its state until it answers: the firmware first has to leave
++  // the mode it was in, and replies left over from that mode may still be on their way.
+   usb.DrainData();
+   usb.SetVoltage3V3();
+-  usb.SetMode(MODE_GC_JOYBUS);
+-  std::this_thread::sleep_for(std::chrono::milliseconds(150));
+-  usb.DrainData();
+   uint8_t state[64] = {};
+   size_t state_len = 0;
+-  if (usb.SendCommand({CMD_JOY_GET_STATE}))
+-    state_len = usb.ReadBytes(state, sizeof(state), 500);
+-  if (state_len < 6 || state[0] != CMD_JOY_GET_STATE)
++  bool joy_ok = false;
++  std::string seen;
++  for (int attempt = 0; attempt < 8 && !joy_ok && !quitting() && !usb.Lost(); attempt++)
+   {
+-    LogLine(fmt::format("JOY Bus: no answer to GetState ({} bytes: {}). This firmware has no "
+-                        "GameCube JOY Bus mode.",
+-                        state_len, Hex(state, state_len)));
++    if (attempt % 3 == 0)
++    {
++      if (attempt > 0)
++        usb.SendCommand({CMD_CANCEL});
++      usb.SetMode(MODE_GC_JOYBUS);
++      std::this_thread::sleep_for(std::chrono::milliseconds(250));
++      usb.DrainData();
++    }
++    // The firmware reports each mode change on the status channel; take those so that it never
++    // has to wait for a reader before it starts the new mode.
++    for (int i = 0; i < 8; i++)
++    {
++      uint8_t st[64];
++      const size_t n = usb.ReadStatus(st, sizeof(st), 20);
++      if (n == 0)
++        break;
++      if (seen.size() < 300)
++        seen += " status[" + Hex(st, n, 8) + "]";
++    }
++    if (!usb.SendCommand({CMD_JOY_GET_STATE}))
++      continue;
++    const auto until = Clock::now() + std::chrono::milliseconds(300);
++    while (Clock::now() < until && !joy_ok)
++    {
++      state_len = usb.ReadBytes(state, sizeof(state), 100);
++      if (state_len >= 6 && state[0] == CMD_JOY_GET_STATE)
++        joy_ok = true;
++      else if (state_len > 0 && seen.size() < 300)
++        seen += " [" + Hex(state, state_len, 16) + "]";
++    }
++  }
++  if (!joy_ok)
++  {
++    uint8_t fw[16] = {};
++    size_t fw_len = 0;
++    if (usb.SendCommand({CMD_GET_FIRMWARE_INFO}))
++      fw_len = usb.ReadBytes(fw, sizeof(fw), 300);
++    LogLine(fmt::format("JOY Bus: no answer to GetState. Other packets:{}. Firmware info: {}",
++                        seen.empty() ? " none" : seen, fw_len ? Hex(fw, fw_len) : "none"));
+     SetStatus(State::Error, "JOY Bus needs test firmware");
+-    for (int i = 0; i < 30 && !quitting() && m_owner.IsJoybus(); i++)
++    for (int i = 0; i < 50 && !quitting() && m_owner.IsJoybus(); i++)
+       WaitFor(100);
+     return;
+   }
+@@ -511,11 +546,15 @@ void Link::Run()
+       usb.DrainData();
+       usb.SetVoltage3V3();
+       // Put the adapter in GB-Link mode with the multiboot timing before polling for the GBA;
+-      // a freshly plugged adapter reads 0x00000000 until this is done.
+-      usb.SetMode(MODE_GB_LINK);
+-      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+-      usb.SetTimingConfig(36, 4);
+-      usb.DrainData();
++      // a freshly plugged adapter reads 0x00000000 until this is done. (Not when it is about to
++      // be a GameCube port: two mode changes in a row can leave the firmware in the first.)
++      if (!m_owner.IsJoybus())
++      {
++        usb.SetMode(MODE_GB_LINK);
++        std::this_thread::sleep_for(std::chrono::milliseconds(100));
++        usb.SetTimingConfig(36, 4);
++        usb.DrainData();
++      }
+       agent_loaded = false;
+       pad_active = false;
+       SetStatus(State::WaitingForGba, "Waiting for GBA");
+-- 
+2.43.0
+
