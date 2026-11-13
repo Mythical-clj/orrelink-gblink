@@ -1,0 +1,332 @@
+From 77f556c91f2c5911d26b3a653c1504693cd64181 Mon Sep 17 00:00:00 2001
+From: t <t@t>
+Date: Fri, 13 Nov 2026 14:23:20 -0600
+Subject: [PATCH] GBLink JOY Bus lag model: answer late only what is safe to
+
+The solo lag test linked up and loaded the battle program, then lost the link:
+the upload predictor also fired in the battle program, told the game the GBA
+had a word ready when it did not, and the game read one that was not there.
+
+- The acknowledgement predictor now only applies to the cartridge's upload
+  handshake (second general-purpose flag held high).
+- Lagging is by repetition of any period, not only reset-opened cycles, so a
+  status asked over and over and a keep-alive word written every frame are
+  answered late too, and a repetition that has just begun holds its latest
+  real reply instead of waiting for each one.
+- A stream of words being fetched or sent is never lagged: every status check
+  there paces the next word and is the real one.
+- Lag is 100 ms.
+
+Replayed against both recorded sessions: about 1% of commands wait.
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01764cASb9aVVk2m6JupRMj5
+---
+ Source/Core/Core/HW/SI/JoyBusLagModel.h   | 193 ++++++++++++++--------
+ Source/Core/Core/HW/SI/SI_DeviceGBALink.h |   2 +-
+ 2 files changed, 121 insertions(+), 74 deletions(-)
+
+diff --git a/Source/Core/Core/HW/SI/JoyBusLagModel.h b/Source/Core/Core/HW/SI/JoyBusLagModel.h
+index 4e75f492e..df4d3ad25 100644
+--- a/Source/Core/Core/HW/SI/JoyBusLagModel.h
++++ b/Source/Core/Core/HW/SI/JoyBusLagModel.h
+@@ -16,16 +16,19 @@
+ // The game's command stream goes to the real GBA untouched and on time, on the owner's machine;
+ // only what the game hears back is arranged here, three ways:
+ //
+-//  A. Steady polling. Commands come in cycles, each opened by a reset (in XD's battle program,
+-//     one cycle a frame). While cycles repeat command for command, a cycle is answered with the
+-//     real replies of the same cycle one lag ago: the game sees the GBA a few frames late, like
+-//     a controller under netplay's input delay.
+-//  B. Handshaked runs. A long run of writes and status checks with no read (sending the GBA its
+-//     program) is answered from the latest real reply that followed the same recent exchange,
+-//     which reproduces the GBA's steady acknowledgements. A real reply that turns out different
+-//     stops this at once (the model then waits, below).
+-//  C. Anything else waits for the real reply to that very command: new commands, reads outside
+-//     steady polling, a cycle that differs from the one before, the first cycles after one.
++//  A. Repetition. While the game repeats itself, command for command (XD's battle program is
++//     polled with the same nine commands every frame; a GBA being waited for is asked for its
++//     status over and over), a command is answered with the real reply to the same command of
++//     the latest repetition older than the lag. The game sees the GBA a few
++//     frames late, like a controller under netplay's input delay. This is safe by the bus's own
++//     rules: a flag the GBA raised stays raised until the game acts on it, and the game acting
++//     differently ends the repetition.
++//  B. The program upload. A long run of writes and status checks with no read, in which the
++//     cartridge acknowledges each word by flipping a flag, is answered from the latest real
++//     reply that followed the same recent exchange, which reproduces those acknowledgements.
++//     A real reply that turns out different stops this at once (the model then waits, below).
++//  C. Anything else waits for the real reply to that very command: new commands, their data,
++//     the first repetitions after one.
+ //
+ // No Dolphin types in here, so that it can be run against a recorded session (JoyTrace.txt).
+ 
+@@ -58,18 +61,22 @@ public:
+   // Returns its index, to be given to Decide once.
+   uint32_t Command(uint64_t ticks, uint8_t cmd, uint32_t word)
+   {
++    const uint32_t k = static_cast<uint32_t>(m_entries.size());
+     Entry e;
+     e.ticks = ticks;
+     e.cmd = cmd;
+     e.word = cmd == kWrite ? word : 0;
+-    if (cmd == kReset || m_cycles.empty())
+-      OpenCycle(static_cast<uint32_t>(m_entries.size()));
+-    e.cycle = static_cast<uint32_t>(m_cycles.size() - 1);
+-    e.pos = static_cast<uint32_t>(m_entries.size()) - m_cycles.back().first;
+     e.run = (cmd == kStatus || cmd == kWrite) ? m_run + 1 : 0;
+     m_run = e.run;
+     m_entries.push_back(e);
+-    return static_cast<uint32_t>(m_entries.size() - 1);
++    // For every period, how many commands in a row (ending here) repeat the one a period back.
++    for (uint32_t p = 1; p <= kMaxPeriod; p++)
++    {
++      const bool same =
++          k >= p && m_entries[k - p].cmd == e.cmd && m_entries[k - p].word == e.word;
++      m_repeat[p] = same ? m_repeat[p] + 1 : 0;
++    }
++    return k;
+   }
+ 
+   // The reply the game gets for command |k| (the latest one given to Command).
+@@ -86,17 +93,13 @@ public:
+ 
+     How how = How::Waited;
+     Reply out;
+-    if (!TryLagged(k, real, &out))
+-    {
+-      if (TryPredicted(k, &out))
+-        how = How::Predicted;
+-      else
+-        out = Learn(k, real);
+-    }
+-    else
+-    {
++    e.source = k;
++    if (TryLagged(k, &out, &e.source))
+       how = How::Lagged;
+-    }
++    else if (TryPredicted(k, &out))
++      how = How::Predicted;
++    else
++      out = Learn(k, real);
+     e.virt = out;
+     if (how_out)
+       *how_out = how;
+@@ -105,23 +108,19 @@ public:
+ 
+ private:
+   static constexpr uint8_t kStatus = 0x00, kRead = 0x14, kWrite = 0x15, kReset = 0xFF;
+-  static constexpr uint32_t kMinRun = 8;  // writes and status checks in a row before B applies
+-  static constexpr uint32_t kSteadyCycles = 3;  // like cycles answered for real before A applies
++  static constexpr uint32_t kMaxPeriod = 64;  // commands in the longest repetition looked for
++  static constexpr uint32_t kRepeats = 3;     // repetitions answered for real before A applies
++  static constexpr uint32_t kMinRun = 8;      // writes and status checks in a row before B applies
+ 
+   struct Entry
+   {
+     uint64_t ticks = 0;
+     uint32_t word = 0;
+-    uint32_t cycle = 0, pos = 0, run = 0;
++    uint32_t run = 0;
++    uint32_t source = 0;  // the command whose real reply the game was given for this one
+     uint8_t cmd = 0;
+     Reply real, virt;
+   };
+-  struct Cycle
+-  {
+-    uint32_t first = 0;  // index of its first command
+-    uint32_t count = 0;
+-    bool differs = false;  // from the epoch's first cycle
+-  };
+ 
+   const Reply& Learn(uint32_t i, const RealFn& real)
+   {
+@@ -135,53 +134,81 @@ private:
+     return e.real;
+   }
+ 
+-  void OpenCycle(uint32_t first)
++  // A: the same command of the latest repetition that is older than the lag. A repetition that
++  // has only just begun has no reply that old yet: its latest real reply (which every machine
++  // waited for) is held until one is.
++  bool TryLagged(uint32_t k, Reply* out, uint32_t* source) const
+   {
+-    if (!m_cycles.empty())
++    const Entry& e = m_entries[k];
++    for (uint32_t p = 1; p <= kMaxPeriod; p++)
+     {
+-      // The cycle that just ended: one that differs from its epoch's first, in content or in
+-      // length, ends the epoch. The next cycle starts a new one and is answered for real.
+-      const uint32_t c = static_cast<uint32_t>(m_cycles.size() - 1);
+-      Cycle& done = m_cycles.back();
+-      done.count = first - done.first;
+-      if (c > m_epoch && (done.differs || done.count != m_cycles[m_epoch].count))
+-        m_epoch = c + 1;
++      // A status asked again straight away may be held from the second time on: nothing the
++      // game did in between could have changed it.
++      const uint32_t needed = (p == 1 && e.cmd == kStatus) ? 1 : kRepeats * p;
++      if (m_repeat[p] < needed)
++        continue;
++      if (!MayLag(k, p))
++        continue;
++      // Commands k - m_repeat[p] - p + 1 .. k repeat with this period.
++      const uint32_t first = k + 1 - m_repeat[p] - p;
++      uint32_t j = k - p;
++      while (j >= m_horizon && j >= first + p)
++        j -= p;
++      uint32_t from;
++      if (j < m_horizon && j >= first)
++      {
++        from = j;
++        *out = m_entries[j].real;
++      }
++      else
++      {
++        const Entry& last = m_entries[k - p];
++        if (last.source < first)
++          continue;  // what it was told predates the repetition
++        from = last.source;
++        *out = last.virt;
++      }
++      // Kept up without a long pause; after one, what the GBA said before it is no guide.
++      if (e.ticks - m_entries[from].ticks > 3 * m_lag)
++        continue;
++      *source = from;
++      return true;
+     }
+-    Cycle next;
+-    next.first = first;
+-    m_cycles.push_back(next);
++    return false;
+   }
+ 
+-  // A: the same position of the latest cycle of this epoch that is older than the lag.
+-  bool TryLagged(uint32_t k, const RealFn& real, Reply* out)
++  // Which repetitions may be answered late. One command over and over, unless it is a read
++  // (every read takes the GBA's next word). Or a round that opens with a reset, like the battle
++  // program's poll, in which every read answers a write or the reset of that same round: asking
++  // the same thing again gets the same kind of answer. Not a stream of words being fetched or
++  // sent, where each status check paces the next word and must be the real one.
++  bool MayLag(uint32_t k, uint32_t p) const
+   {
+-    const Entry& e = m_entries[k];
+-    const uint32_t c = e.cycle;
+-    if (c <= m_epoch || m_cycles[c].differs)
+-      return false;
+-    const Cycle& ref = m_cycles[m_epoch];
+-    const Entry* same = e.pos < ref.count ? &m_entries[ref.first + e.pos] : nullptr;
+-    if (!same || same->cmd != e.cmd || same->word != e.word)
++    if (p == 1)
++      return m_entries[k].cmd != kRead;
++    uint32_t reset = p;
++    for (uint32_t i = 0; i < p; i++)
+     {
+-      m_cycles[c].differs = true;
+-      return false;
++      if (m_entries[k - i].cmd == kReset)
++        reset = i;  // ends up at the earliest reset of the round
+     }
+-    // The first cycles of an epoch are answered for real: only polling that has settled lags.
+-    if (c < m_epoch + kSteadyCycles)
++    if (reset == p)
+       return false;
+-    // Cycles m_epoch..c-1 are all like the first one (or the epoch would have ended), so their
+-    // command at this position is at the same offset.
+-    uint32_t h = c - 1;
+-    while (h > m_epoch && m_cycles[h].first + e.pos >= m_horizon)
+-      h--;
+-    const uint32_t source = m_cycles[h].first + e.pos;
+-    // A cycle that comes back after a long gap (the same opening as minutes ago) is not polling.
+-    if (e.ticks - m_entries[source].ticks > 3 * m_lag)
++    bool asked = false;
++    for (uint32_t n = 0; n < p; n++)
+     {
+-      m_cycles[c].differs = true;
+-      return false;
++      // The round in order, from that reset on, wrapping around.
++      const uint32_t back = (reset + p - n) % p;
++      const uint8_t cmd = m_entries[k - back].cmd;
++      if (cmd == kReset || cmd == kWrite)
++        asked = true;
++      else if (cmd == kRead)
++      {
++        if (!asked)
++          return false;
++        asked = false;
++      }
+     }
+-    *out = Learn(source, real);
+     return true;
+   }
+ 
+@@ -191,6 +218,16 @@ private:
+     return h;
+   }
+ 
++  // The reply carries the GBA's status with the second general-purpose flag (0x20) set.
++  static bool Handshaking(uint8_t cmd, const Reply& r)
++  {
++    if (cmd == kWrite)
++      return r.len >= 1 && (r.data[0] & 0x20) != 0;
++    if (cmd == kStatus)
++      return r.len >= 3 && (r.data[2] & 0x20) != 0;
++    return false;
++  }
++
+   // The command and the three exchanges before it, as the game saw them (written words left
+   // out: an acknowledgement does not depend on what was sent).
+   bool ContextKey(uint32_t i, uint64_t* key) const
+@@ -218,7 +255,8 @@ private:
+       m_context[key] = i;
+   }
+ 
+-  bool TryPredicted(uint32_t k, Reply* out)
++  // B: what the cartridge said the last time the same exchange led up to this command.
++  bool TryPredicted(uint32_t k, Reply* out) const
+   {
+     const Entry& e = m_entries[k];
+     if (e.run < kMinRun)
+@@ -233,16 +271,25 @@ private:
+     // The last time this happened the GBA did not say what the game was told: stop guessing.
+     if (!(past.real == past.virt))
+       return false;
++    // Only the exchange this is meant for: a cartridge taking its program acknowledges every
++    // word by flipping a flag, with the second general-purpose flag held high throughout.
++    // Anywhere else (a battle program sent a burst of text, or told to wait) the same recent
++    // exchange does not promise the same answer, and a wrong "the GBA has a word for you" makes
++    // the game read one that is not there.
++    bool handshake = Handshaking(e.cmd, past.real);
++    for (uint32_t back = 1; back <= 3; back++)
++      handshake = handshake && Handshaking(m_entries[k - back].cmd, m_entries[k - back].virt);
++    if (!handshake)
++      return false;
+     *out = past.real;
+     return true;
+   }
+ 
+   const uint64_t m_lag;
+   std::vector<Entry> m_entries;
+-  std::vector<Cycle> m_cycles;
+-  uint32_t m_epoch = 0;    // first cycle of the current run of like cycles
+   uint32_t m_horizon = 0;  // commands before this one are older than the lag and known
+   uint32_t m_run = 0;
++  std::array<uint32_t, kMaxPeriod + 1> m_repeat{};
+   std::unordered_map<uint64_t, uint32_t> m_context;
+ };
+ }  // namespace SerialInterface
+diff --git a/Source/Core/Core/HW/SI/SI_DeviceGBALink.h b/Source/Core/Core/HW/SI/SI_DeviceGBALink.h
+index 712938a2a..d07ad19be 100644
+--- a/Source/Core/Core/HW/SI/SI_DeviceGBALink.h
++++ b/Source/Core/Core/HW/SI/SI_DeviceGBALink.h
+@@ -54,7 +54,7 @@ private:
+ 
+   // Netplay (and the lag test): what the game hears comes from the lag model. Model index i is
+   // command number i + 1 (m_seq) on every machine.
+-  static constexpr u64 kLagMs = 80;
++  static constexpr u64 kLagMs = 100;
+   std::unique_ptr<JoyBusLagModel> m_model;
+   u32 m_model_index = 0;
+   std::vector<JoyBusLagModel::Reply> m_real;  // the owner's: the GBA's replies so far
+-- 
+2.43.0
+
