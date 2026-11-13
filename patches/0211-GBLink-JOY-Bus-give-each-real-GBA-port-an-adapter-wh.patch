@@ -1,0 +1,119 @@
+From 2242588c76e8bed0763997eef845900fc10194be Mon Sep 17 00:00:00 2001
+From: t <t@t>
+Date: Fri, 13 Nov 2026 02:05:33 -0600
+Subject: [PATCH] GBLink JOY Bus: give each real-GBA port an adapter whatever
+ the port setting says
+
+The port settings were made for the controller mode, so an adapter set to
+"Port 1" never served GBA ports 2 and 3 and every command went unanswered.
+A port now takes the adapter set for it, or else any free one. With a single
+adapter, port 3 stays an integrated GBA in local play.
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01764cASb9aVVk2m6JupRMj5
+---
+ .../DolphinQt/XDNetplay/XDNetplayConfig.cpp   | 22 ++++++++++----
+ .../Core/InputCommon/GBLink/GBLinkManager.cpp | 29 ++++++++++++++++---
+ .../Core/InputCommon/GBLink/GBLinkManager.h   |  2 ++
+ 3 files changed, 43 insertions(+), 10 deletions(-)
+
+diff --git a/Source/Core/DolphinQt/XDNetplay/XDNetplayConfig.cpp b/Source/Core/DolphinQt/XDNetplay/XDNetplayConfig.cpp
+index 3e494f66c..86fb54301 100644
+--- a/Source/Core/DolphinQt/XDNetplay/XDNetplayConfig.cpp
++++ b/Source/Core/DolphinQt/XDNetplay/XDNetplayConfig.cpp
+@@ -33,6 +33,9 @@
+ #include "Core/NetPlayServer.h"
+ 
+ #include "UICommon/XDNetplay/BattleCustomizer.h"
++#if defined(__LIBUSB__) && !defined(ANDROID)
++#include "InputCommon/GBLink/GBLinkManager.h"
++#endif
+ #include "UICommon/XDNetplay/DisposableSave.h"
+ #include "UICommon/XDNetplay/FormatRules.h"
+ 
+@@ -136,12 +139,19 @@ bool EnsureGbaConfig(bool multi_solo)
+   }
+   // "Real cartridge": the GBAs are real ones on GB-Link adapters in JOY Bus mode. Not for a solo
+   // multi battle, which needs the integrated GBAs.
+-  const SerialInterface::SIDevices gba_device =
+-      Config::Get(Config::MAIN_GBLINK_JOYBUS) && !multi_solo ?
+-          SerialInterface::SIDEVICE_GC_GBA_GBLINK :
+-          SerialInterface::SIDEVICE_GC_GBA_EMULATED;
+-  Config::SetBaseOrCurrent(Config::GetInfoForSIDevice(1), gba_device);
+-  Config::SetBaseOrCurrent(Config::GetInfoForSIDevice(2), gba_device);
++  // Port 2 takes the first adapter; port 3 is a real GBA only when there is a second adapter,
++  // and an integrated GBA otherwise, so one real GBA can still battle.
++  const bool joybus = Config::Get(Config::MAIN_GBLINK_JOYBUS) && !multi_solo;
++  size_t adapters = 2;
++#if defined(__LIBUSB__) && !defined(ANDROID)
++  adapters = GBLink::Manager::Get().GetAdapters().size();
++#endif
++  Config::SetBaseOrCurrent(Config::GetInfoForSIDevice(1),
++                           joybus ? SerialInterface::SIDEVICE_GC_GBA_GBLINK :
++                                    SerialInterface::SIDEVICE_GC_GBA_EMULATED);
++  Config::SetBaseOrCurrent(Config::GetInfoForSIDevice(2),
++                           joybus && adapters >= 2 ? SerialInterface::SIDEVICE_GC_GBA_GBLINK :
++                                                     SerialInterface::SIDEVICE_GC_GBA_EMULATED);
+ 
+   // Cheats (the $XD OU Fixes code) are DERIVED state: BattleCustomizer::
+   // PrepareForStart turns them on exactly when the session needs the AR engine
+diff --git a/Source/Core/InputCommon/GBLink/GBLinkManager.cpp b/Source/Core/InputCommon/GBLink/GBLinkManager.cpp
+index a72b60adf..c8b9cf835 100644
+--- a/Source/Core/InputCommon/GBLink/GBLinkManager.cpp
++++ b/Source/Core/InputCommon/GBLink/GBLinkManager.cpp
+@@ -1127,14 +1127,35 @@ void Manager::SetJoybus(bool on)
+ 
+ bool Manager::JoyBegin(int device, const uint8_t* tx, int tx_len, int rx_len)
+ {
+-  Link* l = LinkFor(device);
+-  return l && l->JoyBegin(device, tx, tx_len, rx_len);
++  // The adapter that already serves this port, then the one the port setting names, then any
++  // adapter no port has taken: the port settings were made for the controller mode (a netplay
++  // host at port 2 plays "port 1" there), and must not leave a real GBA without a port here.
++  for (const auto& slot : m_links)
++  {
++    Link* l = slot.load();
++    if (l && l->JoyDevice() == device)
++      return l->JoyBegin(device, tx, tx_len, rx_len);
++  }
++  if (Link* l = LinkFor(device); l && l->JoyBegin(device, tx, tx_len, rx_len))
++    return true;
++  for (const auto& slot : m_links)
++  {
++    Link* l = slot.load();
++    if (l && l->JoyBegin(device, tx, tx_len, rx_len))
++      return true;
++  }
++  return false;
+ }
+ 
+ int Manager::JoyEnd(int device, uint8_t* rx, double* usb_ms)
+ {
+-  Link* l = LinkFor(device);
+-  return l ? l->JoyEnd(rx, usb_ms) : -1;
++  for (const auto& slot : m_links)
++  {
++    Link* l = slot.load();
++    if (l && l->JoyDevice() == device)
++      return l->JoyEnd(rx, usb_ms);
++  }
++  return -1;
+ }
+ 
+ void Manager::Log(const std::string& line) const
+diff --git a/Source/Core/InputCommon/GBLink/GBLinkManager.h b/Source/Core/InputCommon/GBLink/GBLinkManager.h
+index 993cdaa69..096b6361e 100644
+--- a/Source/Core/InputCommon/GBLink/GBLinkManager.h
++++ b/Source/Core/InputCommon/GBLink/GBLinkManager.h
+@@ -95,6 +95,8 @@ public:
+   // adapter); JoyEnd waits for its reply and returns the reply length, or -1 for no reply.
+   bool JoyBegin(int device, const uint8_t* tx, int tx_len, int rx_len);
+   int JoyEnd(uint8_t* rx, double* usb_ms);
++  // The port this adapter's GBA serves in JOY Bus mode, -1 while none has asked.
++  int JoyDevice() const { return m_joy_device; }
+ 
+ private:
+   struct DumpRequest
+-- 
+2.43.0
+
