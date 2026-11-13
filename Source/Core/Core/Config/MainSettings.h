@@ -296,6 +296,9 @@ extern const Info<std::string> MAIN_XD_IMPORTED_SAVE_3;  // GBA port 3 (device 2
 // GB-Link adapters act as GameCube ports for real GBAs running their cartridges (JOY Bus test
 // firmware), instead of the integrated GBAs. A netplay room follows the host's setting.
 extern const Info<bool> MAIN_GBLINK_JOYBUS;
+// Local play answers the game the way a netplay room would (JoyBusLagModel.h), to try the lag
+// without a second player.
+extern const Info<bool> MAIN_GBLINK_JOYBUS_LAG_TEST;
 extern const Info<int> MAIN_XD_IMPORTED_GAME_2;
 extern const Info<int> MAIN_XD_IMPORTED_GAME_3;
 

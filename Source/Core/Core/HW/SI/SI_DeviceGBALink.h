@@ -5,8 +5,11 @@
 
 #include <array>
 #include <chrono>
+#include <memory>
+#include <vector>
 
 #include "Common/CommonTypes.h"
+#include "Core/HW/SI/JoyBusLagModel.h"
 #include "Core/HW/SI/SI_Device.h"
 
 namespace SerialInterface
@@ -48,6 +51,14 @@ private:
   int m_owner = 0;        // of the command in flight: 0 nobody, 1 this machine, 2 another machine
   int m_link_device = 0;  // which adapter (the local pad number, as the GBA's keys use)
   bool m_started = false;
+
+  // Netplay (and the lag test): what the game hears comes from the lag model. Model index i is
+  // command number i + 1 (m_seq) on every machine.
+  static constexpr u64 kLagMs = 80;
+  std::unique_ptr<JoyBusLagModel> m_model;
+  u32 m_model_index = 0;
+  std::vector<JoyBusLagModel::Reply> m_real;  // the owner's: the GBA's replies so far
+  std::array<u32, 3> m_stat_how{};
 
   // For GBLink.log, every five seconds: how much the game talks to the GBA and what it costs.
   std::chrono::steady_clock::time_point m_stat_time;

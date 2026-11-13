@@ -510,6 +510,10 @@ void XDLauncherDialog::CreateMainLayout()
   m_gblink_joybus_check->setChecked(Config::Get(Config::MAIN_GBLINK_JOYBUS));
   m_gblink_joybus_check->setToolTip(tr("Cartridge over JOY Bus"));
   gblink_layout->addWidget(m_gblink_joybus_check, 1, 0);
+  m_gblink_lag_test_check = new QCheckBox(tr("Netplay lag test"));
+  m_gblink_lag_test_check->setChecked(Config::Get(Config::MAIN_GBLINK_JOYBUS_LAG_TEST));
+  m_gblink_lag_test_check->setToolTip(tr("Solo play with netplay's delay"));
+  gblink_layout->addWidget(m_gblink_lag_test_check, 2, 0);
   gblink_layout->setColumnStretch(0, 1);
   gblink_box->setLayout(gblink_layout);
   layout->addWidget(gblink_box);
@@ -1025,6 +1029,9 @@ void XDLauncherDialog::ConnectWidgets()
 #ifdef ORRELINK_GBLINK
     GBLink::Manager::Get().SetJoybus(on);
 #endif
+  });
+  connect(m_gblink_lag_test_check, &QCheckBox::toggled, this, [](bool on) {
+    Config::SetBaseOrCurrent(Config::MAIN_GBLINK_JOYBUS_LAG_TEST, on);
   });
   connect(m_mgba_toggle, &QToolButton::toggled, this, [this](bool open) {
     m_mgba_section->setVisible(open);
