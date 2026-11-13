@@ -1127,14 +1127,35 @@ void Manager::SetJoybus(bool on)
 
 bool Manager::JoyBegin(int device, const uint8_t* tx, int tx_len, int rx_len)
 {
-  Link* l = LinkFor(device);
-  return l && l->JoyBegin(device, tx, tx_len, rx_len);
+  // The adapter that already serves this port, then the one the port setting names, then any
+  // adapter no port has taken: the port settings were made for the controller mode (a netplay
+  // host at port 2 plays "port 1" there), and must not leave a real GBA without a port here.
+  for (const auto& slot : m_links)
+  {
+    Link* l = slot.load();
+    if (l && l->JoyDevice() == device)
+      return l->JoyBegin(device, tx, tx_len, rx_len);
+  }
+  if (Link* l = LinkFor(device); l && l->JoyBegin(device, tx, tx_len, rx_len))
+    return true;
+  for (const auto& slot : m_links)
+  {
+    Link* l = slot.load();
+    if (l && l->JoyBegin(device, tx, tx_len, rx_len))
+      return true;
+  }
+  return false;
 }
 
 int Manager::JoyEnd(int device, uint8_t* rx, double* usb_ms)
 {
-  Link* l = LinkFor(device);
-  return l ? l->JoyEnd(rx, usb_ms) : -1;
+  for (const auto& slot : m_links)
+  {
+    Link* l = slot.load();
+    if (l && l->JoyDevice() == device)
+      return l->JoyEnd(rx, usb_ms);
+  }
+  return -1;
 }
 
 void Manager::Log(const std::string& line) const
