@@ -9,6 +9,10 @@
 
 #include <fmt/format.h>
 
+#include <fstream>
+#include <mutex>
+
+#include "Common/FileUtil.h"
 #include "Core/Config/MainSettings.h"
 #include "Core/CoreTiming.h"
 #include "Core/NetPlayProto.h"
@@ -32,7 +36,124 @@ void JoyLog(const std::string& line)
   (void)line;
 #endif
 }
+
+// Logs/JoyTrace.txt: every JOY Bus command of the session and its reply, with the emulated time,
+// so the game's protocol can be studied (and a netplay model checked against it) offline. One
+// line per command: port, emulated ticks, command, the word written or "-", the reply or "--";
+// a status asked again with the same reply only counts up ("xN" on the line that ends the run).
+class JoyTrace
+{
+public:
+  static JoyTrace& Get()
+  {
+    static JoyTrace trace;
+    return trace;
+  }
+
+  void Open(u64 ticks_per_second)
+  {
+    std::lock_guard lock(m_mutex);
+    if (m_users++ > 0)
+      return;
+    m_file.close();
+    m_file.clear();
+    File::OpenFStream(m_file, File::GetUserPath(D_LOGS_IDX) + "JoyTrace.txt",
+                      std::ios::out | std::ios::trunc);
+    m_bytes = 0;
+    m_repeat = {};
+    Write(fmt::format("# port ticks cmd word reply  ({} ticks per second)\n", ticks_per_second));
+  }
+
+  void Close()
+  {
+    std::lock_guard lock(m_mutex);
+    if (m_users == 0 || --m_users > 0)
+      return;
+    for (int port = 0; port < 4; port++)
+      FlushRepeat(port);
+    m_file.close();
+  }
+
+  void Add(int port, u64 ticks, u8 cmd, const u8* tx, const u8* rx, int got)
+  {
+    std::lock_guard lock(m_mutex);
+    if (!m_file.is_open() || m_bytes > kMaxBytes || port < 0 || port >= 4)
+      return;
+    std::string reply = "--";
+    if (got > 0)
+    {
+      reply.clear();
+      for (int i = 0; i < got; i++)
+        reply += fmt::format("{:02x}", rx[i]);
+    }
+    Repeat& rep = m_repeat[port];
+    if (cmd == 0x00 && rep.count > 0 && rep.reply == reply)
+    {
+      rep.count++;
+      rep.last_ticks = ticks;
+      return;
+    }
+    FlushRepeat(port);
+    if (cmd == 0x00)
+    {
+      rep.count = 1;
+      rep.reply = reply;
+      rep.first_ticks = rep.last_ticks = ticks;
+      return;
+    }
+    Write(fmt::format("{} {} {:02x} {} {}\n", port + 1, ticks, cmd,
+                      cmd == 0x15 ? fmt::format("{:02x}{:02x}{:02x}{:02x}", tx[1], tx[2], tx[3],
+                                                tx[4]) :
+                                    std::string("-"),
+                      reply));
+  }
+
+private:
+  static constexpr u64 kMaxBytes = 48 * 1024 * 1024;
+  struct Repeat
+  {
+    u32 count = 0;
+    u64 first_ticks = 0, last_ticks = 0;
+    std::string reply;
+  };
+
+  void FlushRepeat(int port)
+  {
+    Repeat& rep = m_repeat[port];
+    if (rep.count == 0)
+      return;
+    Write(rep.count == 1 ?
+              fmt::format("{} {} 00 - {}\n", port + 1, rep.first_ticks, rep.reply) :
+              fmt::format("{} {} 00 - {} x{} {}\n", port + 1, rep.first_ticks, rep.reply,
+                          rep.count, rep.last_ticks));
+    rep.count = 0;
+  }
+
+  void Write(const std::string& text)
+  {
+    if (!m_file.is_open())
+      return;
+    m_file << text;
+    m_bytes += text.size();
+  }
+
+  std::mutex m_mutex;
+  std::ofstream m_file;
+  u64 m_bytes = 0;
+  int m_users = 0;
+  std::array<Repeat, 4> m_repeat;
+};
+
 }  // namespace
+
+bool GBLinkJoybusAvailable()
+{
+#ifdef ORRELINK_JOYBUS
+  return GBLink::Manager::Get().JoyReadyCount() > 0;
+#else
+  return false;
+#endif
+}
 
 CSIDevice_GBALink::CSIDevice_GBALink(Core::System& system, SIDevices device, int device_number)
     : ISIDevice(system, device, device_number), m_stat_time(std::chrono::steady_clock::now())
@@ -44,12 +165,16 @@ CSIDevice_GBALink::CSIDevice_GBALink(Core::System& system, SIDevices device, int
 #endif
   JoyLog(fmt::format("joybus port {}: real GBA device created{}", m_device_number + 1,
                      NetPlay::IsNetPlayRunning() ? " (netplay)" : ""));
+  JoyTrace::Get().Open(m_system.GetSystemTimers().GetTicksPerSecond());
 }
 
 CSIDevice_GBALink::~CSIDevice_GBALink()
 {
   LogStats();
-#ifdef ORRELINK_JOYBUS
+  JoyTrace::Get().Close();
+#ifdef ANDROID
+  GBLink::Manager::Get().SetJoybus(false);
+#elif defined(ORRELINK_JOYBUS)
   GBLink::Manager::Get().SetJoybus(Config::Get(Config::MAIN_GBLINK_JOYBUS));
 #endif
 }
@@ -79,6 +204,7 @@ int CSIDevice_GBALink::RunBuffer(u8* buffer, int request_length)
       return -1;  // not a GBA command: a GBA says nothing
     }
 
+    std::copy(buffer, buffer + 5, m_tx.begin());
     m_seq++;
     m_owner = NetPlay::JoyOwner(m_device_number);
     m_link_device = NetPlay::GbaInputPadFor(m_device_number);
@@ -161,6 +287,7 @@ int CSIDevice_GBALink::RunBuffer(u8* buffer, int request_length)
     }
     if (got <= 0)
       m_stat_none++;
+    JoyTrace::Get().Add(m_device_number, m_timestamp_sent, m_tx[0], m_tx.data(), rx, got);
 
     // The first commands one by one (a status only when its reply changes), then the totals.
     if (m_trace_left > 0)

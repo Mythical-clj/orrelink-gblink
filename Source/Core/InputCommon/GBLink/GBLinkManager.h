@@ -97,6 +97,7 @@ public:
   int JoyEnd(uint8_t* rx, double* usb_ms);
   // The port this adapter's GBA serves in JOY Bus mode, -1 while none has asked.
   int JoyDevice() const { return m_joy_device; }
+  bool IsJoyReady() const { return m_joy_ready; }
 
 private:
   struct DumpRequest
@@ -150,6 +151,8 @@ private:
   uint32_t m_joy_next_id = 0;
   std::condition_variable m_joy_cv;
   std::atomic<bool> m_joy_ready{false};
+  // This adapter's firmware has no JOY Bus mode: it keeps working the GB-Link way.
+  std::atomic<bool> m_joy_unsupported{false};
   std::atomic<int> m_joy_device{-1};
 };
 
@@ -207,6 +210,8 @@ public:
   // the JOY Bus test firmware). The controller, mirror and cartridge reads are off meanwhile.
   void SetJoybus(bool on);
   bool IsJoybus() const { return m_joybus; }
+  // Adapters that are GameCube ports right now (JOY Bus firmware, mode on).
+  int JoyReadyCount() const;
   bool JoyBegin(int device, const uint8_t* tx, int tx_len, int rx_len);
   int JoyEnd(int device, uint8_t* rx, double* usb_ms);
   // A line in GBLink.log.

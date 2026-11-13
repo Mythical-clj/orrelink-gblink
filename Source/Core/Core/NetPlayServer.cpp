@@ -42,6 +42,7 @@
 #include "Core/Boot/Boot.h"
 #include "Core/Config/GraphicsSettings.h"
 #include "Core/Config/MainSettings.h"
+#include "Core/HW/SI/SI_DeviceGBALink.h"
 #include "Core/Config/NetplaySettings.h"
 #include "Core/Config/SYSCONFSettings.h"
 #include "Core/Config/SessionSettings.h"
@@ -2254,7 +2255,8 @@ bool NetPlayServer::SetupNetSettings()
   // seats' staged teams: a Multi start, or a 1v1 start whose host watches.
   settings.xd_boot_copies = m_xd_multi_start || m_xd_watch_start;
   // Real GBAs on GB-Link adapters: 1v1 only (a Multi start keeps the integrated GBAs).
-  settings.gba_joybus = Config::Get(Config::MAIN_GBLINK_JOYBUS) && !m_xd_multi_start;
+  settings.gba_joybus = Config::Get(Config::MAIN_GBLINK_JOYBUS) && !m_xd_multi_start &&
+                        SerialInterface::GBLinkJoybusAvailable();
   {
     const bool mixed = RoomMixesCpuArchitectures();
     const bool safest = Config::Get(Config::NETPLAY_FORCE_COMMON_CORE_ON_MIXED_ARCH);

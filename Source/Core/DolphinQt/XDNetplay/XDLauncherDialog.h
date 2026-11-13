@@ -14,6 +14,7 @@
 #include "UICommon/NetPlayIndex.h"
 
 class QCheckBox;
+class QToolButton;
 class QComboBox;
 class QLabel;
 class QLineEdit;
@@ -147,6 +148,8 @@ private:
   QCheckBox* m_gblink_full_read_check = nullptr;
   QCheckBox* m_gblink_menu_check = nullptr;
   QCheckBox* m_gblink_joybus_check = nullptr;
+  QToolButton* m_mgba_toggle = nullptr;
+  QWidget* m_mgba_section = nullptr;
   QCheckBox* m_gblink_mirror_check = nullptr;
   QPushButton* m_share_team_button = nullptr;
   QPushButton* m_load_team_button = nullptr;
