@@ -95,6 +95,8 @@ public:
   // adapter); JoyEnd waits for its reply and returns the reply length, or -1 for no reply.
   bool JoyBegin(int device, const uint8_t* tx, int tx_len, int rx_len);
   int JoyEnd(uint8_t* rx, double* usb_ms);
+  // The port this adapter's GBA serves in JOY Bus mode, -1 while none has asked.
+  int JoyDevice() const { return m_joy_device; }
 
 private:
   struct DumpRequest

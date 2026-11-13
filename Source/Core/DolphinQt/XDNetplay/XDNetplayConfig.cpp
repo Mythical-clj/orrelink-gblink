@@ -33,6 +33,9 @@
 #include "Core/NetPlayServer.h"
 
 #include "UICommon/XDNetplay/BattleCustomizer.h"
+#if defined(__LIBUSB__) && !defined(ANDROID)
+#include "InputCommon/GBLink/GBLinkManager.h"
+#endif
 #include "UICommon/XDNetplay/DisposableSave.h"
 #include "UICommon/XDNetplay/FormatRules.h"
 
@@ -136,12 +139,19 @@ bool EnsureGbaConfig(bool multi_solo)
   }
   // "Real cartridge": the GBAs are real ones on GB-Link adapters in JOY Bus mode. Not for a solo
   // multi battle, which needs the integrated GBAs.
-  const SerialInterface::SIDevices gba_device =
-      Config::Get(Config::MAIN_GBLINK_JOYBUS) && !multi_solo ?
-          SerialInterface::SIDEVICE_GC_GBA_GBLINK :
-          SerialInterface::SIDEVICE_GC_GBA_EMULATED;
-  Config::SetBaseOrCurrent(Config::GetInfoForSIDevice(1), gba_device);
-  Config::SetBaseOrCurrent(Config::GetInfoForSIDevice(2), gba_device);
+  // Port 2 takes the first adapter; port 3 is a real GBA only when there is a second adapter,
+  // and an integrated GBA otherwise, so one real GBA can still battle.
+  const bool joybus = Config::Get(Config::MAIN_GBLINK_JOYBUS) && !multi_solo;
+  size_t adapters = 2;
+#if defined(__LIBUSB__) && !defined(ANDROID)
+  adapters = GBLink::Manager::Get().GetAdapters().size();
+#endif
+  Config::SetBaseOrCurrent(Config::GetInfoForSIDevice(1),
+                           joybus ? SerialInterface::SIDEVICE_GC_GBA_GBLINK :
+                                    SerialInterface::SIDEVICE_GC_GBA_EMULATED);
+  Config::SetBaseOrCurrent(Config::GetInfoForSIDevice(2),
+                           joybus && adapters >= 2 ? SerialInterface::SIDEVICE_GC_GBA_GBLINK :
+                                                     SerialInterface::SIDEVICE_GC_GBA_EMULATED);
 
   // Cheats (the $XD OU Fixes code) are DERIVED state: BattleCustomizer::
   // PrepareForStart turns them on exactly when the session needs the AR engine
