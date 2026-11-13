@@ -524,7 +524,7 @@ private:
   };
   std::mutex m_joy_mutex;
   std::condition_variable m_joy_cv;
-  std::array<std::deque<JoyReplyEntry>, 4> m_joy_replies;
+  std::array<std::vector<JoyReplyEntry>, 4> m_joy_replies;
   void OnPadData(sf::Packet& packet);
   void OnPadHostData(sf::Packet& packet);
   void OnWiimoteData(sf::Packet& packet);

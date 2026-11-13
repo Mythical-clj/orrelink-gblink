@@ -74,7 +74,8 @@ public:
     m_file.close();
   }
 
-  void Add(int port, u64 ticks, u8 cmd, const u8* tx, const u8* rx, int got)
+  void Add(int port, u64 ticks, u8 cmd, const u8* tx, const u8* rx, int got,
+           const std::string& note)
   {
     std::lock_guard lock(m_mutex);
     if (!m_file.is_open() || m_bytes > kMaxBytes || port < 0 || port >= 4)
@@ -86,6 +87,7 @@ public:
       for (int i = 0; i < got; i++)
         reply += fmt::format("{:02x}", rx[i]);
     }
+    reply += note;  // " l": lagged, " p": predicted (JoyBusLagModel.h), and the real reply if not it
     Repeat& rep = m_repeat[port];
     if (cmd == 0x00 && rep.count > 0 && rep.reply == reply)
     {
@@ -209,6 +211,25 @@ int CSIDevice_GBALink::RunBuffer(u8* buffer, int request_length)
     m_owner = NetPlay::JoyOwner(m_device_number);
     m_link_device = NetPlay::GbaInputPadFor(m_device_number);
     m_started = false;
+    m_timestamp_sent = m_system.GetCoreTiming().GetTicks();
+    if (m_seq == 1)
+    {
+      // Decided once, at the first command, the same on every machine of a room.
+      const bool netplay = NetPlay::IsNetPlayRunning();
+      if (netplay ? m_owner != 0 : Config::Get(Config::MAIN_GBLINK_JOYBUS_LAG_TEST))
+      {
+        m_model = std::make_unique<JoyBusLagModel>(
+            u64{m_system.GetSystemTimers().GetTicksPerSecond()} * kLagMs / 1000);
+        JoyLog(fmt::format("joybus port {}: lag model on, {} ms{}", m_device_number + 1, kLagMs,
+                           netplay ? "" : " (lag test)"));
+      }
+    }
+    if (m_model)
+    {
+      m_model_index = m_model->Command(
+          m_timestamp_sent, buffer[0],
+          (u32{buffer[1]} << 24) | (u32{buffer[2]} << 16) | (u32{buffer[3]} << 8) | buffer[4]);
+    }
 #ifdef ORRELINK_JOYBUS
     if (m_owner == 1 && m_link_device >= 0)
       m_started = GBLink::Manager::Get().JoyBegin(m_link_device, buffer, tx_len, m_rx_len);
@@ -221,7 +242,6 @@ int CSIDevice_GBALink::RunBuffer(u8* buffer, int request_length)
                          m_device_number + 1, m_seq, buffer[0], buffer[1], buffer[2], buffer[3],
                          buffer[4]));
     }
-    m_timestamp_sent = m_system.GetCoreTiming().GetTicks();
     m_next_action = NextAction::WaitTransferTime;
     return 0;
   }
@@ -242,6 +262,8 @@ int CSIDevice_GBALink::RunBuffer(u8* buffer, int request_length)
     m_next_action = NextAction::SendCommand;
     u8 rx[5] = {};
     int got = -1;
+    // The GBA's own answer, on the machine it is plugged into.
+    JoyBusLagModel::Reply real;
     if (m_owner == 1)
     {
 #ifdef ORRELINK_JOYBUS
@@ -255,22 +277,66 @@ int CSIDevice_GBALink::RunBuffer(u8* buffer, int request_length)
 #endif
       if (got != m_rx_len)
         got = -1;  // a short reply is no reply, on every machine
+      real.len = static_cast<s8>(got);
+      if (got > 0)
+        std::copy(rx, rx + got, real.data.begin());
       if (NetPlay::IsNetPlayRunning())
         NetPlay::SendJoyReply(m_device_number, m_seq, got, rx);
     }
-    else if (m_owner == 2)
+
+    // What the game hears. Alone, the GBA's answer. In a netplay room (or with the lag test on),
+    // what the lag model makes of the real answers: the same on every machine, and without a
+    // network trip for each command. See JoyBusLagModel.h.
+    std::string note;
+    if (m_model)
     {
-      const auto t0 = std::chrono::steady_clock::now();
-      int len = -1;
-      if (NetPlay::WaitJoyReply(m_device_number, m_seq, &len, rx))
-        got = len;
-      const double ms =
-          std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-      m_stat_net_ms += ms;
-      m_stat_net_max = std::max(m_stat_net_max, ms);
-      m_stat_net_waits++;
-      if (got != m_rx_len)
-        got = -1;
+      if (m_owner == 1)
+        m_real.push_back(real);
+      const auto fetch = [this](u32 index) {
+        JoyBusLagModel::Reply r;
+        r.len = -1;
+        if (m_owner == 1)
+          return index < m_real.size() ? m_real[index] : r;
+        if (m_owner != 2)
+          return r;
+        const auto t0 = std::chrono::steady_clock::now();
+        int len = -1;
+        u8 data[5] = {};
+        if (NetPlay::WaitJoyReply(m_device_number, index + 1, &len, data) && len > 0 && len <= 5)
+        {
+          r.len = static_cast<s8>(len);
+          std::copy(data, data + len, r.data.begin());
+        }
+        const double ms = std::chrono::duration<double, std::milli>(
+                              std::chrono::steady_clock::now() - t0)
+                              .count();
+        if (ms >= 0.5)
+        {
+          m_stat_net_ms += ms;
+          m_stat_net_max = std::max(m_stat_net_max, ms);
+          m_stat_net_waits++;
+        }
+        return r;
+      };
+      JoyBusLagModel::How how = JoyBusLagModel::How::Waited;
+      const JoyBusLagModel::Reply heard = m_model->Decide(m_model_index, fetch, &how);
+      m_stat_how[static_cast<size_t>(how)]++;
+      got = heard.len > 0 ? heard.len : -1;
+      std::fill(std::begin(rx), std::end(rx), u8{0});
+      if (got > 0)
+        std::copy(heard.data.begin(), heard.data.begin() + got, rx);
+      if (how != JoyBusLagModel::How::Waited)
+      {
+        note = how == JoyBusLagModel::How::Lagged ? " l" : " p";
+        if (m_owner == 1 && !(real == heard))
+        {
+          note += " real=";
+          if (real.len <= 0)
+            note += "--";
+          for (int i = 0; i < real.len; i++)
+            note += fmt::format("{:02x}", real.data[i]);
+        }
+      }
     }
 
     switch (m_last_cmd)
@@ -287,7 +353,7 @@ int CSIDevice_GBALink::RunBuffer(u8* buffer, int request_length)
     }
     if (got <= 0)
       m_stat_none++;
-    JoyTrace::Get().Add(m_device_number, m_timestamp_sent, m_tx[0], m_tx.data(), rx, got);
+    JoyTrace::Get().Add(m_device_number, m_timestamp_sent, m_tx[0], m_tx.data(), rx, got, note);
 
     // The first commands one by one (a status only when its reply changes), then the totals.
     if (m_trace_left > 0)
@@ -334,10 +400,16 @@ void CSIDevice_GBALink::LogStats()
         "joybus port {} ({}): {:.0f} commands/s (status {}, read {}, write {}), {} unanswered",
         m_device_number + 1, owners[std::clamp(m_owner, 0, 2)], total / seconds, m_stat_status,
         m_stat_read, m_stat_write, m_stat_none);
+    if (m_model)
+    {
+      line += fmt::format(", model: {} waited, {} lagged, {} predicted", m_stat_how[0],
+                          m_stat_how[1], m_stat_how[2]);
+    }
     if (m_stat_net_waits > 0)
     {
-      line += fmt::format(", waited for the room {:.1f} ms each (max {:.1f}), {:.0f} ms per second",
-                          m_stat_net_ms / m_stat_net_waits, m_stat_net_max,
+      line += fmt::format(", {} waits for the room, {:.1f} ms each (max {:.1f}), {:.0f} ms per "
+                          "second",
+                          m_stat_net_waits, m_stat_net_ms / m_stat_net_waits, m_stat_net_max,
                           m_stat_net_ms / seconds);
     }
     else if (m_owner == 1)
@@ -349,6 +421,7 @@ void CSIDevice_GBALink::LogStats()
   }
   m_stat_status = m_stat_read = m_stat_write = m_stat_none = m_stat_net_waits = 0;
   m_stat_usb_ms = m_stat_usb_max = m_stat_net_ms = m_stat_net_max = 0;
+  m_stat_how = {};
   m_stat_time = std::chrono::steady_clock::now();
 }
 

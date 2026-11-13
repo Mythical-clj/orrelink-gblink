@@ -4647,32 +4647,26 @@ void NetPlayClient::OnJoyReply(sf::Packet& packet)
 }
 
 // called from ---CPU--- thread
+// The reply to the port's command number |seq| (from 1). Replies arrive in order and are kept,
+// so any one that has arrived can be asked for again.
 bool NetPlayClient::WaitJoyReply(int port, u32 seq, int* len, u8* data)
 {
-  if (port < 0 || static_cast<size_t>(port) >= m_joy_replies.size())
+  if (port < 0 || static_cast<size_t>(port) >= m_joy_replies.size() || seq == 0)
     return false;
   std::unique_lock lk(m_joy_mutex);
-  auto& queue = m_joy_replies[port];
-  while (true)
+  const auto& replies = m_joy_replies[port];
+  while (replies.size() < seq)
   {
-    // Replies come in the order the game asked, on every machine: anything older is left over
-    // from a command this machine gave up on.
-    while (!queue.empty() && queue.front().seq < seq)
-      queue.pop_front();
-    if (!queue.empty())
-    {
-      if (queue.front().seq != seq)
-        return false;  // this machine is behind the owner's count: the game states differ
-      const JoyReplyEntry entry = queue.front();
-      queue.pop_front();
-      *len = entry.len;
-      std::copy(entry.data.begin(), entry.data.end(), data);
-      return true;
-    }
     if (!m_is_running.IsSet() || PadOwnerHasLeftRoom(port))
       return false;
     m_joy_cv.wait_for(lk, std::chrono::milliseconds(20));
   }
+  const JoyReplyEntry& entry = replies[seq - 1];
+  if (entry.seq != seq)
+    return false;  // the owner counts differently: the game states differ
+  *len = entry.len;
+  std::copy(entry.data.begin(), entry.data.end(), data);
+  return true;
 }
 
 const PadMappingArray& NetPlayClient::GetPadMapping() const
