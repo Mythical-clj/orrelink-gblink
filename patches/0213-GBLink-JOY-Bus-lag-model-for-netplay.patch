@@ -1,0 +1,649 @@
+From 8c4576572fbce3aa45b10183734387030f8ce9b6 Mon Sep 17 00:00:00 2001
+From: t <t@t>
+Date: Fri, 13 Nov 2026 13:17:25 -0600
+Subject: [PATCH] GBLink JOY Bus: lag model for netplay
+
+A room no longer waits one network trip for every JOY Bus reply. Each machine
+runs JoyBusLagModel for a real-GBA port: steady polling is answered with the
+real replies of the same cycle one lag (80 ms) ago, the handshaked program
+upload is answered from the GBA's acknowledgement pattern, and anything else
+waits for the real reply. The GBA itself still gets the game's commands
+untouched and on time. Checked against a recorded session (JoyTrace.txt):
+134568 commands, 2% waited, the upload predicted exactly but for its last
+status. "Netplay lag test" runs the model in solo play.
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01764cASb9aVVk2m6JupRMj5
+---
+ Source/Core/Core/CMakeLists.txt               |   1 +
+ Source/Core/Core/Config/MainSettings.cpp      |   2 +
+ Source/Core/Core/Config/MainSettings.h        |   3 +
+ Source/Core/Core/HW/SI/JoyBusLagModel.h       | 248 ++++++++++++++++++
+ Source/Core/Core/HW/SI/SI_DeviceGBALink.cpp   | 107 ++++++--
+ Source/Core/Core/HW/SI/SI_DeviceGBALink.h     |  11 +
+ Source/Core/Core/NetPlayClient.cpp            |  30 +--
+ Source/Core/Core/NetPlayClient.h              |   2 +-
+ Source/Core/DolphinLib.props                  |   1 +
+ .../DolphinQt/XDNetplay/XDLauncherDialog.cpp  |   7 +
+ .../DolphinQt/XDNetplay/XDLauncherDialog.h    |   1 +
+ 11 files changed, 377 insertions(+), 36 deletions(-)
+ create mode 100644 Source/Core/Core/HW/SI/JoyBusLagModel.h
+
+diff --git a/Source/Core/Core/CMakeLists.txt b/Source/Core/Core/CMakeLists.txt
+index c1f52348e..7d145e45a 100644
+--- a/Source/Core/Core/CMakeLists.txt
++++ b/Source/Core/Core/CMakeLists.txt
+@@ -278,6 +278,7 @@ add_library(core
+   HW/SI/SI_DeviceDanceMat.h
+   HW/SI/SI_DeviceGBA.cpp
+   HW/SI/SI_DeviceGBA.h
++  HW/SI/JoyBusLagModel.h
+   HW/SI/SI_DeviceGBALink.cpp
+   HW/SI/SI_DeviceGBALink.h
+   HW/SI/SI_DeviceGCAdapter.cpp
+diff --git a/Source/Core/Core/Config/MainSettings.cpp b/Source/Core/Core/Config/MainSettings.cpp
+index 2ec57e64f..dafa505dd 100644
+--- a/Source/Core/Core/Config/MainSettings.cpp
++++ b/Source/Core/Core/Config/MainSettings.cpp
+@@ -442,6 +442,8 @@ const Info<int> MAIN_XD_TIMER_GAME_MINUTES{{System::Main, "XDNetplay", "TimerGam
+ const Info<std::string> MAIN_XD_IMPORTED_SAVE_2{{System::Main, "XDNetplay", "ImportedSave2"}, ""};
+ const Info<std::string> MAIN_XD_IMPORTED_SAVE_3{{System::Main, "XDNetplay", "ImportedSave3"}, ""};
+ const Info<bool> MAIN_GBLINK_JOYBUS{{System::Main, "XDNetplay", "GBLinkJoybus"}, true};
++const Info<bool> MAIN_GBLINK_JOYBUS_LAG_TEST{{System::Main, "XDNetplay", "GBLinkJoybusLagTest"},
++                                              false};
+ const Info<int> MAIN_XD_IMPORTED_GAME_2{{System::Main, "XDNetplay", "ImportedGame2"}, 0};
+ const Info<int> MAIN_XD_IMPORTED_GAME_3{{System::Main, "XDNetplay", "ImportedGame3"}, 0};
+ const Info<std::string> MAIN_XD_SUBMIT_TEAM_B64{{System::Main, "XDNetplay", "SubmitTeamB64"}, ""};
+diff --git a/Source/Core/Core/Config/MainSettings.h b/Source/Core/Core/Config/MainSettings.h
+index 8e6df4eac..e77680593 100644
+--- a/Source/Core/Core/Config/MainSettings.h
++++ b/Source/Core/Core/Config/MainSettings.h
+@@ -296,6 +296,9 @@ extern const Info<std::string> MAIN_XD_IMPORTED_SAVE_3;  // GBA port 3 (device 2
+ // GB-Link adapters act as GameCube ports for real GBAs running their cartridges (JOY Bus test
+ // firmware), instead of the integrated GBAs. A netplay room follows the host's setting.
+ extern const Info<bool> MAIN_GBLINK_JOYBUS;
++// Local play answers the game the way a netplay room would (JoyBusLagModel.h), to try the lag
++// without a second player.
++extern const Info<bool> MAIN_GBLINK_JOYBUS_LAG_TEST;
+ extern const Info<int> MAIN_XD_IMPORTED_GAME_2;
+ extern const Info<int> MAIN_XD_IMPORTED_GAME_3;
+ 
+diff --git a/Source/Core/Core/HW/SI/JoyBusLagModel.h b/Source/Core/Core/HW/SI/JoyBusLagModel.h
+new file mode 100644
+index 000000000..4e75f492e
+--- /dev/null
++++ b/Source/Core/Core/HW/SI/JoyBusLagModel.h
+@@ -0,0 +1,248 @@
++// Copyright 2026 OrreLink contributors
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#pragma once
++
++// What a netplay room tells the game a real GBA said (SI_DeviceGBALink).
++//
++// A real GBA answers on one machine only, and every other machine learns the answer one network
++// trip later. Waiting for each answer would cost a trip per command, and the game sends hundreds
++// of commands a second. So every machine runs this model for each real-GBA port instead: it is
++// given the game's commands (the same on every machine, emulation being deterministic) and the
++// GBA's real replies as they arrive from the port's owner, and it decides the reply the game
++// gets. Every machine decides the same, because a decision only ever uses real replies older
++// than a fixed span of emulated time (the lag), which every machine waits for.
++//
++// The game's command stream goes to the real GBA untouched and on time, on the owner's machine;
++// only what the game hears back is arranged here, three ways:
++//
++//  A. Steady polling. Commands come in cycles, each opened by a reset (in XD's battle program,
++//     one cycle a frame). While cycles repeat command for command, a cycle is answered with the
++//     real replies of the same cycle one lag ago: the game sees the GBA a few frames late, like
++//     a controller under netplay's input delay.
++//  B. Handshaked runs. A long run of writes and status checks with no read (sending the GBA its
++//     program) is answered from the latest real reply that followed the same recent exchange,
++//     which reproduces the GBA's steady acknowledgements. A real reply that turns out different
++//     stops this at once (the model then waits, below).
++//  C. Anything else waits for the real reply to that very command: new commands, reads outside
++//     steady polling, a cycle that differs from the one before, the first cycles after one.
++//
++// No Dolphin types in here, so that it can be run against a recorded session (JoyTrace.txt).
++
++#include <algorithm>
++#include <array>
++#include <cstdint>
++#include <functional>
++#include <unordered_map>
++#include <vector>
++
++namespace SerialInterface
++{
++class JoyBusLagModel
++{
++public:
++  struct Reply
++  {
++    int8_t len = -2;  // -2: not known yet, -1: the GBA did not answer, else the byte count
++    std::array<uint8_t, 5> data{};
++    bool operator==(const Reply& o) const { return len == o.len && data == o.data; }
++  };
++  enum class How : uint8_t { Waited, Lagged, Predicted };
++
++  // real(index) returns the real reply to command |index|, waiting for it if it has not arrived.
++  using RealFn = std::function<Reply(uint32_t index)>;
++
++  explicit JoyBusLagModel(uint64_t lag_ticks) : m_lag(lag_ticks) {}
++
++  // The game sends command |cmd| (with |word| when it is a write) at emulated time |ticks|.
++  // Returns its index, to be given to Decide once.
++  uint32_t Command(uint64_t ticks, uint8_t cmd, uint32_t word)
++  {
++    Entry e;
++    e.ticks = ticks;
++    e.cmd = cmd;
++    e.word = cmd == kWrite ? word : 0;
++    if (cmd == kReset || m_cycles.empty())
++      OpenCycle(static_cast<uint32_t>(m_entries.size()));
++    e.cycle = static_cast<uint32_t>(m_cycles.size() - 1);
++    e.pos = static_cast<uint32_t>(m_entries.size()) - m_cycles.back().first;
++    e.run = (cmd == kStatus || cmd == kWrite) ? m_run + 1 : 0;
++    m_run = e.run;
++    m_entries.push_back(e);
++    return static_cast<uint32_t>(m_entries.size() - 1);
++  }
++
++  // The reply the game gets for command |k| (the latest one given to Command).
++  Reply Decide(uint32_t k, const RealFn& real, How* how_out = nullptr)
++  {
++    Entry& e = m_entries[k];
++    // Everything older than the lag is known on every machine from here on.
++    while (m_horizon < k && m_entries[m_horizon].ticks + m_lag <= e.ticks)
++    {
++      Learn(m_horizon, real);
++      IndexContext(m_horizon);
++      m_horizon++;
++    }
++
++    How how = How::Waited;
++    Reply out;
++    if (!TryLagged(k, real, &out))
++    {
++      if (TryPredicted(k, &out))
++        how = How::Predicted;
++      else
++        out = Learn(k, real);
++    }
++    else
++    {
++      how = How::Lagged;
++    }
++    e.virt = out;
++    if (how_out)
++      *how_out = how;
++    return out;
++  }
++
++private:
++  static constexpr uint8_t kStatus = 0x00, kRead = 0x14, kWrite = 0x15, kReset = 0xFF;
++  static constexpr uint32_t kMinRun = 8;  // writes and status checks in a row before B applies
++  static constexpr uint32_t kSteadyCycles = 3;  // like cycles answered for real before A applies
++
++  struct Entry
++  {
++    uint64_t ticks = 0;
++    uint32_t word = 0;
++    uint32_t cycle = 0, pos = 0, run = 0;
++    uint8_t cmd = 0;
++    Reply real, virt;
++  };
++  struct Cycle
++  {
++    uint32_t first = 0;  // index of its first command
++    uint32_t count = 0;
++    bool differs = false;  // from the epoch's first cycle
++  };
++
++  const Reply& Learn(uint32_t i, const RealFn& real)
++  {
++    Entry& e = m_entries[i];
++    if (e.real.len == -2)
++    {
++      e.real = real(i);
++      if (e.real.len == -2)
++        e.real.len = -1;
++    }
++    return e.real;
++  }
++
++  void OpenCycle(uint32_t first)
++  {
++    if (!m_cycles.empty())
++    {
++      // The cycle that just ended: one that differs from its epoch's first, in content or in
++      // length, ends the epoch. The next cycle starts a new one and is answered for real.
++      const uint32_t c = static_cast<uint32_t>(m_cycles.size() - 1);
++      Cycle& done = m_cycles.back();
++      done.count = first - done.first;
++      if (c > m_epoch && (done.differs || done.count != m_cycles[m_epoch].count))
++        m_epoch = c + 1;
++    }
++    Cycle next;
++    next.first = first;
++    m_cycles.push_back(next);
++  }
++
++  // A: the same position of the latest cycle of this epoch that is older than the lag.
++  bool TryLagged(uint32_t k, const RealFn& real, Reply* out)
++  {
++    const Entry& e = m_entries[k];
++    const uint32_t c = e.cycle;
++    if (c <= m_epoch || m_cycles[c].differs)
++      return false;
++    const Cycle& ref = m_cycles[m_epoch];
++    const Entry* same = e.pos < ref.count ? &m_entries[ref.first + e.pos] : nullptr;
++    if (!same || same->cmd != e.cmd || same->word != e.word)
++    {
++      m_cycles[c].differs = true;
++      return false;
++    }
++    // The first cycles of an epoch are answered for real: only polling that has settled lags.
++    if (c < m_epoch + kSteadyCycles)
++      return false;
++    // Cycles m_epoch..c-1 are all like the first one (or the epoch would have ended), so their
++    // command at this position is at the same offset.
++    uint32_t h = c - 1;
++    while (h > m_epoch && m_cycles[h].first + e.pos >= m_horizon)
++      h--;
++    const uint32_t source = m_cycles[h].first + e.pos;
++    // A cycle that comes back after a long gap (the same opening as minutes ago) is not polling.
++    if (e.ticks - m_entries[source].ticks > 3 * m_lag)
++    {
++      m_cycles[c].differs = true;
++      return false;
++    }
++    *out = Learn(source, real);
++    return true;
++  }
++
++  static uint64_t Mix(uint64_t h, uint64_t v)
++  {
++    h ^= v + 0x9E3779B97F4A7C15ull + (h << 6) + (h >> 2);
++    return h;
++  }
++
++  // The command and the three exchanges before it, as the game saw them (written words left
++  // out: an acknowledgement does not depend on what was sent).
++  bool ContextKey(uint32_t i, uint64_t* key) const
++  {
++    if (i < 3)
++      return false;
++    uint64_t h = m_entries[i].cmd;
++    for (uint32_t back = 1; back <= 3; back++)
++    {
++      const Entry& p = m_entries[i - back];
++      uint64_t v = p.cmd;
++      v = (v << 8) | static_cast<uint8_t>(p.virt.len);
++      for (int b = 0; b < 5; b++)
++        v = (v << 8) | (p.cmd == kRead && b < 4 ? 0 : p.virt.data[b]);
++      h = Mix(h, v);
++    }
++    *key = h;
++    return true;
++  }
++
++  void IndexContext(uint32_t i)
++  {
++    uint64_t key;
++    if (m_entries[i].run >= 1 && ContextKey(i, &key))
++      m_context[key] = i;
++  }
++
++  bool TryPredicted(uint32_t k, Reply* out)
++  {
++    const Entry& e = m_entries[k];
++    if (e.run < kMinRun)
++      return false;
++    uint64_t key;
++    if (!ContextKey(k, &key))
++      return false;
++    const auto it = m_context.find(key);
++    if (it == m_context.end())
++      return false;
++    const Entry& past = m_entries[it->second];
++    // The last time this happened the GBA did not say what the game was told: stop guessing.
++    if (!(past.real == past.virt))
++      return false;
++    *out = past.real;
++    return true;
++  }
++
++  const uint64_t m_lag;
++  std::vector<Entry> m_entries;
++  std::vector<Cycle> m_cycles;
++  uint32_t m_epoch = 0;    // first cycle of the current run of like cycles
++  uint32_t m_horizon = 0;  // commands before this one are older than the lag and known
++  uint32_t m_run = 0;
++  std::unordered_map<uint64_t, uint32_t> m_context;
++};
++}  // namespace SerialInterface
+diff --git a/Source/Core/Core/HW/SI/SI_DeviceGBALink.cpp b/Source/Core/Core/HW/SI/SI_DeviceGBALink.cpp
+index 81f159cae..5fb7f245a 100644
+--- a/Source/Core/Core/HW/SI/SI_DeviceGBALink.cpp
++++ b/Source/Core/Core/HW/SI/SI_DeviceGBALink.cpp
+@@ -74,7 +74,8 @@ public:
+     m_file.close();
+   }
+ 
+-  void Add(int port, u64 ticks, u8 cmd, const u8* tx, const u8* rx, int got)
++  void Add(int port, u64 ticks, u8 cmd, const u8* tx, const u8* rx, int got,
++           const std::string& note)
+   {
+     std::lock_guard lock(m_mutex);
+     if (!m_file.is_open() || m_bytes > kMaxBytes || port < 0 || port >= 4)
+@@ -86,6 +87,7 @@ public:
+       for (int i = 0; i < got; i++)
+         reply += fmt::format("{:02x}", rx[i]);
+     }
++    reply += note;  // " l": lagged, " p": predicted (JoyBusLagModel.h), and the real reply if not it
+     Repeat& rep = m_repeat[port];
+     if (cmd == 0x00 && rep.count > 0 && rep.reply == reply)
+     {
+@@ -209,6 +211,25 @@ int CSIDevice_GBALink::RunBuffer(u8* buffer, int request_length)
+     m_owner = NetPlay::JoyOwner(m_device_number);
+     m_link_device = NetPlay::GbaInputPadFor(m_device_number);
+     m_started = false;
++    m_timestamp_sent = m_system.GetCoreTiming().GetTicks();
++    if (m_seq == 1)
++    {
++      // Decided once, at the first command, the same on every machine of a room.
++      const bool netplay = NetPlay::IsNetPlayRunning();
++      if (netplay ? m_owner != 0 : Config::Get(Config::MAIN_GBLINK_JOYBUS_LAG_TEST))
++      {
++        m_model = std::make_unique<JoyBusLagModel>(
++            u64{m_system.GetSystemTimers().GetTicksPerSecond()} * kLagMs / 1000);
++        JoyLog(fmt::format("joybus port {}: lag model on, {} ms{}", m_device_number + 1, kLagMs,
++                           netplay ? "" : " (lag test)"));
++      }
++    }
++    if (m_model)
++    {
++      m_model_index = m_model->Command(
++          m_timestamp_sent, buffer[0],
++          (u32{buffer[1]} << 24) | (u32{buffer[2]} << 16) | (u32{buffer[3]} << 8) | buffer[4]);
++    }
+ #ifdef ORRELINK_JOYBUS
+     if (m_owner == 1 && m_link_device >= 0)
+       m_started = GBLink::Manager::Get().JoyBegin(m_link_device, buffer, tx_len, m_rx_len);
+@@ -221,7 +242,6 @@ int CSIDevice_GBALink::RunBuffer(u8* buffer, int request_length)
+                          m_device_number + 1, m_seq, buffer[0], buffer[1], buffer[2], buffer[3],
+                          buffer[4]));
+     }
+-    m_timestamp_sent = m_system.GetCoreTiming().GetTicks();
+     m_next_action = NextAction::WaitTransferTime;
+     return 0;
+   }
+@@ -242,6 +262,8 @@ int CSIDevice_GBALink::RunBuffer(u8* buffer, int request_length)
+     m_next_action = NextAction::SendCommand;
+     u8 rx[5] = {};
+     int got = -1;
++    // The GBA's own answer, on the machine it is plugged into.
++    JoyBusLagModel::Reply real;
+     if (m_owner == 1)
+     {
+ #ifdef ORRELINK_JOYBUS
+@@ -255,22 +277,66 @@ int CSIDevice_GBALink::RunBuffer(u8* buffer, int request_length)
+ #endif
+       if (got != m_rx_len)
+         got = -1;  // a short reply is no reply, on every machine
++      real.len = static_cast<s8>(got);
++      if (got > 0)
++        std::copy(rx, rx + got, real.data.begin());
+       if (NetPlay::IsNetPlayRunning())
+         NetPlay::SendJoyReply(m_device_number, m_seq, got, rx);
+     }
+-    else if (m_owner == 2)
++
++    // What the game hears. Alone, the GBA's answer. In a netplay room (or with the lag test on),
++    // what the lag model makes of the real answers: the same on every machine, and without a
++    // network trip for each command. See JoyBusLagModel.h.
++    std::string note;
++    if (m_model)
+     {
+-      const auto t0 = std::chrono::steady_clock::now();
+-      int len = -1;
+-      if (NetPlay::WaitJoyReply(m_device_number, m_seq, &len, rx))
+-        got = len;
+-      const double ms =
+-          std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+-      m_stat_net_ms += ms;
+-      m_stat_net_max = std::max(m_stat_net_max, ms);
+-      m_stat_net_waits++;
+-      if (got != m_rx_len)
+-        got = -1;
++      if (m_owner == 1)
++        m_real.push_back(real);
++      const auto fetch = [this](u32 index) {
++        JoyBusLagModel::Reply r;
++        r.len = -1;
++        if (m_owner == 1)
++          return index < m_real.size() ? m_real[index] : r;
++        if (m_owner != 2)
++          return r;
++        const auto t0 = std::chrono::steady_clock::now();
++        int len = -1;
++        u8 data[5] = {};
++        if (NetPlay::WaitJoyReply(m_device_number, index + 1, &len, data) && len > 0 && len <= 5)
++        {
++          r.len = static_cast<s8>(len);
++          std::copy(data, data + len, r.data.begin());
++        }
++        const double ms = std::chrono::duration<double, std::milli>(
++                              std::chrono::steady_clock::now() - t0)
++                              .count();
++        if (ms >= 0.5)
++        {
++          m_stat_net_ms += ms;
++          m_stat_net_max = std::max(m_stat_net_max, ms);
++          m_stat_net_waits++;
++        }
++        return r;
++      };
++      JoyBusLagModel::How how = JoyBusLagModel::How::Waited;
++      const JoyBusLagModel::Reply heard = m_model->Decide(m_model_index, fetch, &how);
++      m_stat_how[static_cast<size_t>(how)]++;
++      got = heard.len > 0 ? heard.len : -1;
++      std::fill(std::begin(rx), std::end(rx), u8{0});
++      if (got > 0)
++        std::copy(heard.data.begin(), heard.data.begin() + got, rx);
++      if (how != JoyBusLagModel::How::Waited)
++      {
++        note = how == JoyBusLagModel::How::Lagged ? " l" : " p";
++        if (m_owner == 1 && !(real == heard))
++        {
++          note += " real=";
++          if (real.len <= 0)
++            note += "--";
++          for (int i = 0; i < real.len; i++)
++            note += fmt::format("{:02x}", real.data[i]);
++        }
++      }
+     }
+ 
+     switch (m_last_cmd)
+@@ -287,7 +353,7 @@ int CSIDevice_GBALink::RunBuffer(u8* buffer, int request_length)
+     }
+     if (got <= 0)
+       m_stat_none++;
+-    JoyTrace::Get().Add(m_device_number, m_timestamp_sent, m_tx[0], m_tx.data(), rx, got);
++    JoyTrace::Get().Add(m_device_number, m_timestamp_sent, m_tx[0], m_tx.data(), rx, got, note);
+ 
+     // The first commands one by one (a status only when its reply changes), then the totals.
+     if (m_trace_left > 0)
+@@ -334,10 +400,16 @@ void CSIDevice_GBALink::LogStats()
+         "joybus port {} ({}): {:.0f} commands/s (status {}, read {}, write {}), {} unanswered",
+         m_device_number + 1, owners[std::clamp(m_owner, 0, 2)], total / seconds, m_stat_status,
+         m_stat_read, m_stat_write, m_stat_none);
++    if (m_model)
++    {
++      line += fmt::format(", model: {} waited, {} lagged, {} predicted", m_stat_how[0],
++                          m_stat_how[1], m_stat_how[2]);
++    }
+     if (m_stat_net_waits > 0)
+     {
+-      line += fmt::format(", waited for the room {:.1f} ms each (max {:.1f}), {:.0f} ms per second",
+-                          m_stat_net_ms / m_stat_net_waits, m_stat_net_max,
++      line += fmt::format(", {} waits for the room, {:.1f} ms each (max {:.1f}), {:.0f} ms per "
++                          "second",
++                          m_stat_net_waits, m_stat_net_ms / m_stat_net_waits, m_stat_net_max,
+                           m_stat_net_ms / seconds);
+     }
+     else if (m_owner == 1)
+@@ -349,6 +421,7 @@ void CSIDevice_GBALink::LogStats()
+   }
+   m_stat_status = m_stat_read = m_stat_write = m_stat_none = m_stat_net_waits = 0;
+   m_stat_usb_ms = m_stat_usb_max = m_stat_net_ms = m_stat_net_max = 0;
++  m_stat_how = {};
+   m_stat_time = std::chrono::steady_clock::now();
+ }
+ 
+diff --git a/Source/Core/Core/HW/SI/SI_DeviceGBALink.h b/Source/Core/Core/HW/SI/SI_DeviceGBALink.h
+index cae8fe340..712938a2a 100644
+--- a/Source/Core/Core/HW/SI/SI_DeviceGBALink.h
++++ b/Source/Core/Core/HW/SI/SI_DeviceGBALink.h
+@@ -5,8 +5,11 @@
+ 
+ #include <array>
+ #include <chrono>
++#include <memory>
++#include <vector>
+ 
+ #include "Common/CommonTypes.h"
++#include "Core/HW/SI/JoyBusLagModel.h"
+ #include "Core/HW/SI/SI_Device.h"
+ 
+ namespace SerialInterface
+@@ -49,6 +52,14 @@ private:
+   int m_link_device = 0;  // which adapter (the local pad number, as the GBA's keys use)
+   bool m_started = false;
+ 
++  // Netplay (and the lag test): what the game hears comes from the lag model. Model index i is
++  // command number i + 1 (m_seq) on every machine.
++  static constexpr u64 kLagMs = 80;
++  std::unique_ptr<JoyBusLagModel> m_model;
++  u32 m_model_index = 0;
++  std::vector<JoyBusLagModel::Reply> m_real;  // the owner's: the GBA's replies so far
++  std::array<u32, 3> m_stat_how{};
++
+   // For GBLink.log, every five seconds: how much the game talks to the GBA and what it costs.
+   std::chrono::steady_clock::time_point m_stat_time;
+   u32 m_stat_status = 0, m_stat_read = 0, m_stat_write = 0, m_stat_none = 0;
+diff --git a/Source/Core/Core/NetPlayClient.cpp b/Source/Core/Core/NetPlayClient.cpp
+index f9d45d1c6..4243107d0 100644
+--- a/Source/Core/Core/NetPlayClient.cpp
++++ b/Source/Core/Core/NetPlayClient.cpp
+@@ -4647,32 +4647,26 @@ void NetPlayClient::OnJoyReply(sf::Packet& packet)
+ }
+ 
+ // called from ---CPU--- thread
++// The reply to the port's command number |seq| (from 1). Replies arrive in order and are kept,
++// so any one that has arrived can be asked for again.
+ bool NetPlayClient::WaitJoyReply(int port, u32 seq, int* len, u8* data)
+ {
+-  if (port < 0 || static_cast<size_t>(port) >= m_joy_replies.size())
++  if (port < 0 || static_cast<size_t>(port) >= m_joy_replies.size() || seq == 0)
+     return false;
+   std::unique_lock lk(m_joy_mutex);
+-  auto& queue = m_joy_replies[port];
+-  while (true)
+-  {
+-    // Replies come in the order the game asked, on every machine: anything older is left over
+-    // from a command this machine gave up on.
+-    while (!queue.empty() && queue.front().seq < seq)
+-      queue.pop_front();
+-    if (!queue.empty())
+-    {
+-      if (queue.front().seq != seq)
+-        return false;  // this machine is behind the owner's count: the game states differ
+-      const JoyReplyEntry entry = queue.front();
+-      queue.pop_front();
+-      *len = entry.len;
+-      std::copy(entry.data.begin(), entry.data.end(), data);
+-      return true;
+-    }
++  const auto& replies = m_joy_replies[port];
++  while (replies.size() < seq)
++  {
+     if (!m_is_running.IsSet() || PadOwnerHasLeftRoom(port))
+       return false;
+     m_joy_cv.wait_for(lk, std::chrono::milliseconds(20));
+   }
++  const JoyReplyEntry& entry = replies[seq - 1];
++  if (entry.seq != seq)
++    return false;  // the owner counts differently: the game states differ
++  *len = entry.len;
++  std::copy(entry.data.begin(), entry.data.end(), data);
++  return true;
+ }
+ 
+ const PadMappingArray& NetPlayClient::GetPadMapping() const
+diff --git a/Source/Core/Core/NetPlayClient.h b/Source/Core/Core/NetPlayClient.h
+index f602923f0..6b6cc54fc 100644
+--- a/Source/Core/Core/NetPlayClient.h
++++ b/Source/Core/Core/NetPlayClient.h
+@@ -524,7 +524,7 @@ private:
+   };
+   std::mutex m_joy_mutex;
+   std::condition_variable m_joy_cv;
+-  std::array<std::deque<JoyReplyEntry>, 4> m_joy_replies;
++  std::array<std::vector<JoyReplyEntry>, 4> m_joy_replies;
+   void OnPadData(sf::Packet& packet);
+   void OnPadHostData(sf::Packet& packet);
+   void OnWiimoteData(sf::Packet& packet);
+diff --git a/Source/Core/DolphinLib.props b/Source/Core/DolphinLib.props
+index b39e0adad..ac0ecb1b2 100644
+--- a/Source/Core/DolphinLib.props
++++ b/Source/Core/DolphinLib.props
+@@ -336,6 +336,7 @@
+     <ClInclude Include="Core\HW\SI\SI_DeviceAMBaseboard.h" />
+     <ClInclude Include="Core\HW\SI\SI_DeviceDanceMat.h" />
+     <ClInclude Include="Core\HW\SI\SI_DeviceGBA.h" />
++    <ClInclude Include="Core\HW\SI\JoyBusLagModel.h" />
+     <ClInclude Include="Core\HW\SI\SI_DeviceGBALink.h" />
+     <ClInclude Include="Core\HW\SI\SI_DeviceGBAEmu.h" />
+     <ClInclude Include="Core\HW\SI\SI_DeviceGCAdapter.h" />
+diff --git a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
+index c43d64852..0c7028a88 100644
+--- a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
++++ b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
+@@ -510,6 +510,10 @@ void XDLauncherDialog::CreateMainLayout()
+   m_gblink_joybus_check->setChecked(Config::Get(Config::MAIN_GBLINK_JOYBUS));
+   m_gblink_joybus_check->setToolTip(tr("Cartridge over JOY Bus"));
+   gblink_layout->addWidget(m_gblink_joybus_check, 1, 0);
++  m_gblink_lag_test_check = new QCheckBox(tr("Netplay lag test"));
++  m_gblink_lag_test_check->setChecked(Config::Get(Config::MAIN_GBLINK_JOYBUS_LAG_TEST));
++  m_gblink_lag_test_check->setToolTip(tr("Solo play with netplay's delay"));
++  gblink_layout->addWidget(m_gblink_lag_test_check, 2, 0);
+   gblink_layout->setColumnStretch(0, 1);
+   gblink_box->setLayout(gblink_layout);
+   layout->addWidget(gblink_box);
+@@ -1026,6 +1030,9 @@ void XDLauncherDialog::ConnectWidgets()
+     GBLink::Manager::Get().SetJoybus(on);
+ #endif
+   });
++  connect(m_gblink_lag_test_check, &QCheckBox::toggled, this, [](bool on) {
++    Config::SetBaseOrCurrent(Config::MAIN_GBLINK_JOYBUS_LAG_TEST, on);
++  });
+   connect(m_mgba_toggle, &QToolButton::toggled, this, [this](bool open) {
+     m_mgba_section->setVisible(open);
+     m_mgba_toggle->setArrowType(open ? Qt::DownArrow : Qt::RightArrow);
+diff --git a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.h b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.h
+index 94f041364..629ac969c 100644
+--- a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.h
++++ b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.h
+@@ -148,6 +148,7 @@ private:
+   QCheckBox* m_gblink_full_read_check = nullptr;
+   QCheckBox* m_gblink_menu_check = nullptr;
+   QCheckBox* m_gblink_joybus_check = nullptr;
++  QCheckBox* m_gblink_lag_test_check = nullptr;
+   QToolButton* m_mgba_toggle = nullptr;
+   QWidget* m_mgba_section = nullptr;
+   QCheckBox* m_gblink_mirror_check = nullptr;
+-- 
+2.43.0
+
