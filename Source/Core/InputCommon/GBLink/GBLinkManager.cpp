@@ -297,6 +297,8 @@ void Link::RunJoybus(UsbLink& usb)
         seen += " [" + Hex(state, state_len, 16) + "]";
     }
   }
+  if (!joy_ok && (quitting() || usb.Lost()))
+    return;
   if (!joy_ok)
   {
     uint8_t fw[16] = {};
@@ -305,9 +307,8 @@ void Link::RunJoybus(UsbLink& usb)
       fw_len = usb.ReadBytes(fw, sizeof(fw), 300);
     LogLine(fmt::format("JOY Bus: no answer to GetState. Other packets:{}. Firmware info: {}",
                         seen.empty() ? " none" : seen, fw_len ? Hex(fw, fw_len) : "none"));
-    SetStatus(State::Error, "JOY Bus needs test firmware");
-    for (int i = 0; i < 50 && !quitting() && m_owner.IsJoybus(); i++)
-      WaitFor(100);
+    // Not a JOY Bus firmware: this adapter carries on as a GB-Link (controller, mirror, reads).
+    m_joy_unsupported = true;
     return;
   }
   LogLine(fmt::format("JOY Bus mode on: protocol {}, wiring {}, bits {} us", state[1], state[2],
@@ -548,7 +549,7 @@ void Link::Run()
       // Put the adapter in GB-Link mode with the multiboot timing before polling for the GBA;
       // a freshly plugged adapter reads 0x00000000 until this is done. (Not when it is about to
       // be a GameCube port: two mode changes in a row can leave the firmware in the first.)
-      if (!m_owner.IsJoybus())
+      if (!m_owner.IsJoybus() || m_joy_unsupported)
       {
         usb.SetMode(MODE_GB_LINK);
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -561,7 +562,7 @@ void Link::Run()
     }
 
     // ---- JOY Bus mode: the adapter is a GameCube port, the GBA runs its cartridge ----------
-    if (m_owner.IsJoybus())
+    if (m_owner.IsJoybus() && !m_joy_unsupported)
     {
       m_pad_live = false;
       RunJoybus(usb);
@@ -1117,6 +1118,18 @@ void Manager::SetPortSetting(const std::string& key, int setting)
     if (l && l->Key() == key)
       l->SetPortSetting(setting);
   }
+}
+
+int Manager::JoyReadyCount() const
+{
+  int count = 0;
+  for (const auto& slot : m_links)
+  {
+    const Link* l = slot.load();
+    if (l && l->IsJoyReady())
+      count++;
+  }
+  return count;
 }
 
 void Manager::SetJoybus(bool on)

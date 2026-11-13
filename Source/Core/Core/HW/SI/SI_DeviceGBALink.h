@@ -11,6 +11,10 @@
 
 namespace SerialInterface
 {
+// True when a GB-Link adapter with the JOY Bus firmware is plugged in, so "Real GBA" can be the
+// default without leaving a machine that has none without GBAs.
+bool GBLinkJoybusAvailable();
+
 // A real GBA on a GB-Link adapter in JOY Bus mode (InputCommon/GBLink): every JOY Bus command the
 // game sends goes to the GBA, which runs its own cartridge, and the GBA's reply goes back to the
 // game. In netplay the machine that owns the port talks to its GBA and sends each reply to the
@@ -52,6 +56,7 @@ private:
   double m_stat_net_ms = 0, m_stat_net_max = 0;
   u32 m_stat_net_waits = 0;
   std::array<u8, 5> m_last_logged{};
-  u32 m_trace_left = 400;  // the first commands are logged one by one
+  std::array<u8, 5> m_tx{};
+  u32 m_trace_left = 60;  // the first commands are logged one by one (all go to JoyTrace.txt)
 };
 }  // namespace SerialInterface

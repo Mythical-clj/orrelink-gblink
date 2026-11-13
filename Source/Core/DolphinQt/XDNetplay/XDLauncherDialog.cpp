@@ -34,6 +34,7 @@
 #include <QJsonObject>
 #include <QRegularExpression>
 #include <QSettings>
+#include <QToolButton>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
@@ -424,8 +425,21 @@ void XDLauncherDialog::CreateMainLayout()
   // DisposableSave swaps in for the room's duration.
   // GB-Link: a real GBA plugged into this PC. Plays as the controller (no setup beyond
   // powering the GBA on with START+SELECT held) and can hand over its cartridge save.
-  auto* gblink_box = new QGroupBox(tr("Real GBA"));
+  auto* gblink_box = new QGroupBox(tr("GB-Link"));
   auto* gblink_layout = new QGridLayout;
+  // Everything that belongs to the integrated (mGBA) GBAs lives in one section that folds away:
+  // with "Real GBA" on, none of it is needed.
+  m_mgba_toggle = new QToolButton;
+  m_mgba_toggle->setText(tr("mGBA emulation"));
+  m_mgba_toggle->setCheckable(true);
+  m_mgba_toggle->setAutoRaise(true);
+  m_mgba_toggle->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+  m_mgba_toggle->setArrowType(Qt::RightArrow);
+  m_mgba_section = new QWidget;
+  auto* mgba_layout = new QVBoxLayout(m_mgba_section);
+  mgba_layout->setContentsMargins(0, 0, 0, 0);
+  auto* agent_box = new QGroupBox(tr("GBA as controller"));
+  auto* agent_layout = new QGridLayout;
   m_gblink_status = MakeNoteLabel(QString());
   m_gblink_full_read_check = new QCheckBox(tr("Read full save"));
   m_gblink_full_read_check->setChecked(false);
@@ -481,21 +495,26 @@ void XDLauncherDialog::CreateMainLayout()
   }
   m_gblink_read_row->setVisible(false);
   adapters_layout->addWidget(m_gblink_read_row);
-  gblink_layout->addLayout(adapters_layout, 5, 0);
-  gblink_layout->addWidget(m_gblink_pad_check, 1, 0);
-  gblink_layout->addWidget(m_gblink_menu_check, 2, 0);
+  agent_layout->addLayout(adapters_layout, 4, 0);
+  agent_layout->addWidget(m_gblink_pad_check, 0, 0);
+  agent_layout->addWidget(m_gblink_menu_check, 1, 0);
   m_gblink_mirror_check = new QCheckBox(tr("Mirror GBA screen"));
   m_gblink_mirror_check->setChecked(true);
     m_gblink_mirror_check->setToolTip(tr("Show game on GBA"));
-  gblink_layout->addWidget(m_gblink_mirror_check, 3, 0);
-  gblink_layout->addWidget(m_gblink_full_read_check, 4, 0);
-  m_gblink_joybus_check = new QCheckBox(tr("Real cartridge (test)"));
+  agent_layout->addWidget(m_gblink_mirror_check, 2, 0);
+  agent_layout->addWidget(m_gblink_full_read_check, 3, 0);
+  agent_layout->setColumnStretch(0, 1);
+  agent_box->setLayout(agent_layout);
+  mgba_layout->addWidget(agent_box);
+  m_gblink_joybus_check = new QCheckBox(tr("Real GBA"));
   m_gblink_joybus_check->setChecked(Config::Get(Config::MAIN_GBLINK_JOYBUS));
-  m_gblink_joybus_check->setToolTip(tr("JOY Bus firmware, no emulated GBA"));
-  gblink_layout->addWidget(m_gblink_joybus_check, 5, 0);
+  m_gblink_joybus_check->setToolTip(tr("Cartridge over JOY Bus"));
+  gblink_layout->addWidget(m_gblink_joybus_check, 1, 0);
   gblink_layout->setColumnStretch(0, 1);
   gblink_box->setLayout(gblink_layout);
   layout->addWidget(gblink_box);
+  layout->addWidget(m_mgba_toggle);
+  layout->addWidget(m_mgba_section);
 
   auto* saves_box = new QGroupBox(tr("Save Files"));
   auto* saves_layout = new QGridLayout;
@@ -520,7 +539,7 @@ void XDLauncherDialog::CreateMainLayout()
   add_save_row(&m_save_row_port3, tr("Guest-slot save (GBA port 3):"));
   saves_layout->setColumnStretch(1, 1);
   saves_box->setLayout(saves_layout);
-  layout->addWidget(saves_box);
+  mgba_layout->addWidget(saves_box);
 
   auto* team_box = new QGroupBox(tr("Team sharing"));
   auto* team_layout = new QGridLayout;
@@ -543,7 +562,7 @@ void XDLauncherDialog::CreateMainLayout()
   // site, so they only appear once a hub URL has been set (QSettings
   // "xdnetplay/huburl").
   team_box->setVisible(!QSettings().value(QStringLiteral("xdnetplay/huburl")).toString().isEmpty());
-  layout->addWidget(team_box);
+  mgba_layout->addWidget(team_box);
 
   auto* battle_box = new QGroupBox(tr("Battle"));
   auto* battle_layout = new QGridLayout;
@@ -779,7 +798,10 @@ void XDLauncherDialog::FitToScreen()
   const QSize preferred = sizeHint();
   const int max_height =
       std::max(minimumSizeHint().height(), avail.height() - WINDOW_CHROME_HEIGHT);
-  resize(preferred.width(), std::min(preferred.height(), max_height));
+  // A 2:3 shape (480 x 720 or larger), not the layout's narrow minimum.
+  const int height = std::min(std::max(preferred.height(), 720), max_height);
+  const int width = std::min(std::max({preferred.width(), 480, height * 2 / 3}), avail.width());
+  resize(width, height);
 
   QRect r(QPoint(), size());
   r.moveCenter(parentWidget() ? parentWidget()->frameGeometry().center() : avail.center());
@@ -1004,6 +1026,20 @@ void XDLauncherDialog::ConnectWidgets()
     GBLink::Manager::Get().SetJoybus(on);
 #endif
   });
+  connect(m_mgba_toggle, &QToolButton::toggled, this, [this](bool open) {
+    m_mgba_section->setVisible(open);
+    m_mgba_toggle->setArrowType(open ? Qt::DownArrow : Qt::RightArrow);
+    QSettings().setValue(QStringLiteral("xdnetplay/mgba_section_open"), open);
+  });
+  {
+    // Open by default only where it is the way to play: "Real GBA" off.
+    const bool open = QSettings()
+                          .value(QStringLiteral("xdnetplay/mgba_section_open"),
+                                 !Config::Get(Config::MAIN_GBLINK_JOYBUS))
+                          .toBool();
+    m_mgba_section->setVisible(open);
+    m_mgba_toggle->setChecked(open);
+  }
   m_gblink_timer = new QTimer(this);
   connect(m_gblink_timer, &QTimer::timeout, this, &XDLauncherDialog::RefreshGbLinkStatus);
   m_gblink_timer->start(500);

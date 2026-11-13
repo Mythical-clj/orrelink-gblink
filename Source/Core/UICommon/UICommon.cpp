@@ -190,7 +190,11 @@ void InitControllers(const WindowSystemInfo& wsi)
   Pad::Initialize();
   Pad::InitializeGBA();
 #if defined(__LIBUSB__) || defined(ANDROID)
+#ifndef ANDROID
+  // (Android has no "Real GBA" local play yet: its adapters become GameCube ports only for a
+  // netplay room that asks for them.)
   GBLink::Manager::Get().SetJoybus(Config::Get(Config::MAIN_GBLINK_JOYBUS));
+#endif
   GBLink::Manager::Get().Start();
 #endif
   Keyboard::Initialize();

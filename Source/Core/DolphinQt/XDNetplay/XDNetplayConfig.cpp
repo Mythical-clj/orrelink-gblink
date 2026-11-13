@@ -141,14 +141,15 @@ bool EnsureGbaConfig(bool multi_solo)
   // multi battle, which needs the integrated GBAs.
   // Port 2 takes the first adapter; port 3 is a real GBA only when there is a second adapter,
   // and an integrated GBA otherwise, so one real GBA can still battle.
+  // No adapter with the JOY Bus firmware: integrated GBAs, whatever the setting (on by default).
   const bool joybus = Config::Get(Config::MAIN_GBLINK_JOYBUS) && !multi_solo;
-  size_t adapters = 2;
+  size_t adapters = 0;
 #if defined(__LIBUSB__) && !defined(ANDROID)
-  adapters = GBLink::Manager::Get().GetAdapters().size();
+  adapters = static_cast<size_t>(GBLink::Manager::Get().JoyReadyCount());
 #endif
   Config::SetBaseOrCurrent(Config::GetInfoForSIDevice(1),
-                           joybus ? SerialInterface::SIDEVICE_GC_GBA_GBLINK :
-                                    SerialInterface::SIDEVICE_GC_GBA_EMULATED);
+                           joybus && adapters >= 1 ? SerialInterface::SIDEVICE_GC_GBA_GBLINK :
+                                                     SerialInterface::SIDEVICE_GC_GBA_EMULATED);
   Config::SetBaseOrCurrent(Config::GetInfoForSIDevice(2),
                            joybus && adapters >= 2 ? SerialInterface::SIDEVICE_GC_GBA_GBLINK :
                                                      SerialInterface::SIDEVICE_GC_GBA_EMULATED);
