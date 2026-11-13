@@ -171,6 +171,9 @@ struct NetSettings
   // start, or a 1v1 start whose host watches; NetPlay::GetGBASavePath). Serialized LAST in
   // StartGame, after xd_multi_p1.
   bool xd_boot_copies = false;
+  // The GBA ports are real GBAs on GB-Link adapters in JOY Bus mode (SIDEVICE_GC_GBA_GBLINK),
+  // not integrated GBAs: the host's setting. Serialized LAST in StartGame, after xd_boot_copies.
+  bool gba_joybus = false;
 
   Sram sram;
 
@@ -226,6 +229,9 @@ enum class MessageID : u8
   PadBuffer = 0x62,
   PadHostData = 0x63,
   GBAConfig = 0x64,
+  // A real GBA's reply to one JOY Bus command, from the machine that owns the port to the room:
+  // PadIndex port, u32 seq (the port's command count), u8 length (0xFF: no reply), 5 bytes.
+  JoyReply = 0x65,
 
   WiimoteData = 0x70,
   WiimoteMapping = 0x71,
@@ -376,6 +382,13 @@ PadDetails GetPadDetails(int pad_num);
 // netplay game, -1 when that GBA is not this machine's; outside a netplay game, the channel
 // itself. Lock-free (atomics filled at OnStartGame): safe from a UI thread per input event.
 int GbaInputPadFor(int channel);
+// Who answers JOY Bus commands for the real GBA on SI channel `port` (SIDEVICE_GC_GBA_GBLINK):
+// 0 nobody, 1 this machine, 2 another machine in the room. Outside a netplay game, 1. Lock-free.
+int JoyOwner(int port);
+// The owner's side: the reply to the port's command number `seq` (len < 0: no reply), for the room.
+void SendJoyReply(int port, u32 seq, int len, const u8* data);
+// Everyone else's: waits for that reply. False when the game stopped or the owner left.
+bool WaitJoyReply(int port, u32 seq, int* len, u8* data);
 // Whether this machine's local GameCube pad `local_pad` plays a GameCube port in the running
 // netplay game (a joiner's never does: its only ports are GBAs); outside a netplay game, true.
 // Lock-free, like GbaInputPadFor.

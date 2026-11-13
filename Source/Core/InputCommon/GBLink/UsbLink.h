@@ -30,7 +30,7 @@ struct DeviceInfo
   // same key every time, even though the bus address changes on replug.
   std::string Key() const { return std::to_string(bus) + "-" + port_path; }
   std::string port_path;
-  bool IsNewFirmware() const { return vid == 0x2FE3; }
+  bool IsNewFirmware() const { return vid == 0x2FE3 || (vid == 0x1209 && pid == 0xB011); }
 };
 
 // Command bytes on the command channel (firmware README, "USB Command Protocol").
@@ -44,12 +44,15 @@ enum Cmd : uint8_t
   CMD_VOLTAGE_5V = 0x41,
   CMD_SET_CABLE_OVERRIDE = 0x49,
   CMD_GET_CABLE_TYPE = 0x4A,
+  CMD_JOY_TRANSFER = 0x50,
+  CMD_JOY_GET_STATE = 0x53,
 };
 enum Mode : uint8_t
 {
   MODE_GBA_TRADE_EMU = 0x00,
   MODE_GBA_LINK = 0x01,
   MODE_GB_LINK = 0x02,
+  MODE_GC_JOYBUS = 0x08,  // test firmware: the adapter is a GameCube port for a GBA
 };
 
 class UsbLink

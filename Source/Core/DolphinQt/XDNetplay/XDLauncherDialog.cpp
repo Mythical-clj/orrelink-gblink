@@ -489,6 +489,10 @@ void XDLauncherDialog::CreateMainLayout()
     m_gblink_mirror_check->setToolTip(tr("Show game on GBA"));
   gblink_layout->addWidget(m_gblink_mirror_check, 3, 0);
   gblink_layout->addWidget(m_gblink_full_read_check, 4, 0);
+  m_gblink_joybus_check = new QCheckBox(tr("Real cartridge (test)"));
+  m_gblink_joybus_check->setChecked(Config::Get(Config::MAIN_GBLINK_JOYBUS));
+  m_gblink_joybus_check->setToolTip(tr("JOY Bus firmware, no emulated GBA"));
+  gblink_layout->addWidget(m_gblink_joybus_check, 5, 0);
   gblink_layout->setColumnStretch(0, 1);
   gblink_box->setLayout(gblink_layout);
   layout->addWidget(gblink_box);
@@ -992,6 +996,12 @@ void XDLauncherDialog::ConnectWidgets()
     GBLink::Manager::Get().SetMenuNavigation(on);
 #else
     (void)on;
+#endif
+  });
+  connect(m_gblink_joybus_check, &QCheckBox::toggled, this, [](bool on) {
+    Config::SetBaseOrCurrent(Config::MAIN_GBLINK_JOYBUS, on);
+#ifdef ORRELINK_GBLINK
+    GBLink::Manager::Get().SetJoybus(on);
 #endif
   });
   m_gblink_timer = new QTimer(this);

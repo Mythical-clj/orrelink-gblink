@@ -154,6 +154,8 @@ public:
       {
         layer->Set(config_info, (i == 0 && m_settings.xd_multi_p1) ?
                                     SerialInterface::SIDEVICE_GC_GBA_XDMULTI :
+                                    m_settings.gba_joybus ?
+                                    SerialInterface::SIDEVICE_GC_GBA_GBLINK :
                                     SerialInterface::SIDEVICE_GC_GBA_EMULATED);
       }
       else if (player_id == m_settings.local_player_id)

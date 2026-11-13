@@ -45,7 +45,11 @@ object GBLinkUsb {
     private fun manager(): UsbManager =
         DolphinApplication.getAppContext().getSystemService(Context.USB_SERVICE) as UsbManager
 
-    private fun isGbLink(device: UsbDevice) = VIDS.contains(device.vendorId)
+    private fun isNewFirmware(device: UsbDevice) =
+        device.vendorId == 0x2FE3 || (device.vendorId == 0x1209 && device.productId == 0xB011)
+
+    private fun isGbLink(device: UsbDevice) =
+        VIDS.contains(device.vendorId) || isNewFirmware(device)
 
     private fun requestPermission(device: UsbDevice) {
         val context = DolphinApplication.getAppContext()
@@ -120,7 +124,7 @@ object GBLinkUsb {
 
         val result = IntArray(8)
         result[0] = chosen.id
-        if (device.vendorId == 0x2FE3 && ins.size >= 2 && outs.size >= 2) {
+        if (isNewFirmware(device) && ins.size >= 2 && outs.size >= 2) {
             result[1] = outs[0].address
             result[2] = ins[0].address
             result[3] = outs[1].address

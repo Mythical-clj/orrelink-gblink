@@ -26,6 +26,8 @@
 
 namespace GBLink
 {
+class UsbLink;
+
 enum class State
 {
   Stopped,
@@ -88,6 +90,12 @@ public:
   void CancelDump();
   bool IsDumpQueued() const;
 
+  // JOY Bus mode (Manager::SetJoybus): the adapter is a GameCube port and the GBA runs its
+  // cartridge. JoyBegin queues one command for |device| (the first device to ask keeps the
+  // adapter); JoyEnd waits for its reply and returns the reply length, or -1 for no reply.
+  bool JoyBegin(int device, const uint8_t* tx, int tx_len, int rx_len);
+  int JoyEnd(uint8_t* rx, double* usb_ms);
+
 private:
   struct DumpRequest
   {
@@ -97,6 +105,7 @@ private:
   };
 
   void Run();
+  void RunJoybus(UsbLink& usb);
   void SetStatus(State state, std::string text);
   void LogLine(const std::string& s) const;
   // Waits up to ms; returns early on quit or a queued dump.
@@ -123,6 +132,23 @@ private:
   std::atomic<uint16_t> m_pad_keys{0};
   mutable std::atomic<uint64_t> m_query_count{0};
   mutable std::atomic<uint64_t> m_query_live{0};
+
+  struct JoyRequest
+  {
+    uint8_t tx[5] = {};
+    uint8_t rx[5] = {};
+    int tx_len = 0, rx_len = 0;
+    int got = -1;
+    double usb_ms = 0;
+    bool pending = false;  // waiting for the adapter thread
+    bool done = false;     // answered, not yet collected
+    uint32_t id = 0;
+  };
+  JoyRequest m_joy;  // guarded by m_mutex
+  uint32_t m_joy_next_id = 0;
+  std::condition_variable m_joy_cv;
+  std::atomic<bool> m_joy_ready{false};
+  std::atomic<int> m_joy_device{-1};
 };
 
 struct AdapterInfo
@@ -175,6 +201,15 @@ public:
   bool WantsMirrorFrames(int device) const;
   void SubmitMirrorFrame(int device, const uint32_t* xbgr, size_t count);
 
+  // JOY Bus mode: every adapter acts as a GameCube port for a GBA running its cartridge (needs
+  // the JOY Bus test firmware). The controller, mirror and cartridge reads are off meanwhile.
+  void SetJoybus(bool on);
+  bool IsJoybus() const { return m_joybus; }
+  bool JoyBegin(int device, const uint8_t* tx, int tx_len, int rx_len);
+  int JoyEnd(int device, uint8_t* rx, double* usb_ms);
+  // A line in GBLink.log.
+  void Log(const std::string& line) const;
+
   // Asynchronous, read-only cartridge save dump through the adapter at |key| (empty: the first
   // one). |done| runs on that adapter's thread. |progress| gets 0-100. Returns false if a dump
   // is already queued there or there is no such adapter.
@@ -206,5 +241,6 @@ private:
   std::atomic<bool> m_menu_nav{false};
   std::atomic<bool> m_mirror_on{true};
   std::atomic<bool> m_controller_wanted{true};
+  std::atomic<bool> m_joybus{false};
 };
 }  // namespace GBLink

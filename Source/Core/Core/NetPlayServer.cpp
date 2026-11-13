@@ -1594,6 +1594,30 @@ unsigned int NetPlayServer::OnData(sf::Packet& packet, Client& player)
   }
   break;
 
+  case MessageID::JoyReply:
+  {
+    if (player.current_game != m_current_game)
+      break;
+
+    PadIndex map;
+    u32 seq;
+    u8 len;
+    packet >> map >> seq >> len;
+    if (!IsValidPadIndex(m_pad_map, map) || m_pad_map.at(map) != player.pid)
+      return 1;
+
+    sf::Packet spac;
+    spac << MessageID::JoyReply << map << seq << len;
+    for (int i = 0; i < 5; i++)
+    {
+      u8 byte;
+      packet >> byte;
+      spac << byte;
+    }
+    SendToClients(spac, player.pid);
+  }
+  break;
+
   case MessageID::PadHostData:
   {
     // Kick player if they're not the golfer.
@@ -2229,6 +2253,8 @@ bool NetPlayServer::SetupNetSettings()
   // Every machine, the host's included, boots the GBAs from the copies the host wrote from the
   // seats' staged teams: a Multi start, or a 1v1 start whose host watches.
   settings.xd_boot_copies = m_xd_multi_start || m_xd_watch_start;
+  // Real GBAs on GB-Link adapters: 1v1 only (a Multi start keeps the integrated GBAs).
+  settings.gba_joybus = Config::Get(Config::MAIN_GBLINK_JOYBUS) && !m_xd_multi_start;
   {
     const bool mixed = RoomMixesCpuArchitectures();
     const bool safest = Config::Get(Config::NETPLAY_FORCE_COMMON_CORE_ON_MIXED_ARCH);
@@ -2696,6 +2722,7 @@ bool NetPlayServer::StartGame()
   // XD multi battles: after xd_rng_seed, LAST of all.
   spac << m_settings.xd_multi_p1;
   spac << m_settings.xd_boot_copies;
+  spac << m_settings.gba_joybus;
 
   SendAsyncToClients(std::move(spac));
 

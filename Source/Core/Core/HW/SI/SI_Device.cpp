@@ -14,6 +14,7 @@
 #include "Common/Swap.h"
 #include "Core/HW/SI/SI_DeviceDanceMat.h"
 #include "Core/HW/SI/SI_DeviceGBA.h"
+#include "Core/HW/SI/SI_DeviceGBALink.h"
 #ifdef HAS_LIBMGBA
 #include "Core/HW/SI/SI_DeviceGBAEmu.h"
 #include "Core/HW/SI/SI_DeviceXDMultiPort.h"
@@ -181,6 +182,9 @@ std::unique_ptr<ISIDevice> SIDevice_Create(Core::System& system, const SIDevices
 
   case SIDEVICE_GC_GBA:
     return std::make_unique<CSIDevice_GBA>(system, device, port_number);
+
+  case SIDEVICE_GC_GBA_GBLINK:
+    return std::make_unique<CSIDevice_GBALink>(system, device, port_number);
 
   case SIDEVICE_GC_GBA_EMULATED:
 #ifdef HAS_LIBMGBA

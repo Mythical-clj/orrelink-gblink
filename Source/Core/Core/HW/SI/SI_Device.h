@@ -104,6 +104,8 @@ enum SIDevices : int
   // Port 1 only: a GC controller that becomes an integrated GBA for XD multi
   // battles. Must stay 14; the Android settings hardcode the ints.
   SIDEVICE_GC_GBA_XDMULTI,
+  // A real GBA on a GB-Link adapter in JOY Bus mode (SI_DeviceGBALink.h). Must stay 15.
+  SIDEVICE_GC_GBA_GBLINK,
   // Not a valid device. Used for checking whether enum values are valid.
   SIDEVICE_COUNT,
 };

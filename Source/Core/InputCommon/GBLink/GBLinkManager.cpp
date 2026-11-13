@@ -182,6 +182,217 @@ void Link::WaitFor(int ms)
   m_cv.wait_for(lock, std::chrono::milliseconds(ms), [this] { return m_quit || m_dump; });
 }
 
+bool Link::JoyBegin(int device, const uint8_t* tx, int tx_len, int rx_len)
+{
+  if (!m_joy_ready || tx_len < 1 || tx_len > 5 || rx_len < 1 || rx_len > 5)
+    return false;
+  int expected = -1;
+  m_joy_device.compare_exchange_strong(expected, device);
+  if (m_joy_device != device)
+    return false;  // this adapter's GBA is already another port's
+  {
+    std::lock_guard lock(m_mutex);
+    if (m_joy.pending)
+      return false;
+    m_joy = JoyRequest{};
+    m_joy.id = ++m_joy_next_id;
+    std::copy(tx, tx + tx_len, m_joy.tx);
+    m_joy.tx_len = tx_len;
+    m_joy.rx_len = rx_len;
+    m_joy.pending = true;
+  }
+  m_cv.notify_all();
+  return true;
+}
+
+int Link::JoyEnd(uint8_t* rx, double* usb_ms)
+{
+  std::unique_lock lock(m_mutex);
+  m_joy_cv.wait_for(lock, std::chrono::milliseconds(400), [this] { return m_joy.done; });
+  if (!m_joy.done)
+  {
+    m_joy.pending = false;
+    return -1;
+  }
+  m_joy.done = false;
+  if (usb_ms)
+    *usb_ms = m_joy.usb_ms;
+  if (m_joy.got > 0)
+    std::copy(m_joy.rx, m_joy.rx + m_joy.got, rx);
+  return m_joy.got;
+}
+
+void Link::RunJoybus(UsbLink& usb)
+{
+  const auto quitting = [this] {
+    std::lock_guard lock(m_mutex);
+    return m_quit;
+  };
+  // One command and its reply: [0x50, seq, tx len, rx len, tx...] -> [0x50, seq, result, wiring,
+  // rx len, rx...] on the data channel. Returns the reply length, or -1 for no reply.
+  uint8_t seq = 0;
+  uint8_t wiring = 0xFF;
+  const auto transfer = [&](const uint8_t* tx, int tx_len, uint8_t* rx, int rx_len) -> int {
+    seq++;
+    std::vector<uint8_t> cmd{CMD_JOY_TRANSFER, seq, static_cast<uint8_t>(tx_len),
+                             static_cast<uint8_t>(rx_len)};
+    cmd.insert(cmd.end(), tx, tx + tx_len);
+    if (!usb.SendCommand(cmd))
+      return -1;
+    const auto deadline = Clock::now() + std::chrono::milliseconds(200);
+    uint8_t buf[64];
+    while (Clock::now() < deadline && !usb.Lost())
+    {
+      const size_t n = usb.ReadBytes(buf, sizeof(buf), 50);
+      if (n < 5 || buf[0] != CMD_JOY_TRANSFER || buf[1] != seq)
+        continue;  // nothing yet, or a late reply to an earlier command
+      wiring = buf[3];
+      const int got = std::min<int>(buf[4], rx_len);
+      if (buf[2] != 0 || got <= 0 || n < static_cast<size_t>(5 + got))
+        return -1;
+      std::copy(buf + 5, buf + 5 + got, rx);
+      return got;
+    }
+    return -1;
+  };
+
+  usb.DrainData();
+  usb.SetVoltage3V3();
+  usb.SetMode(MODE_GC_JOYBUS);
+  std::this_thread::sleep_for(std::chrono::milliseconds(150));
+  usb.DrainData();
+  uint8_t state[64] = {};
+  size_t state_len = 0;
+  if (usb.SendCommand({CMD_JOY_GET_STATE}))
+    state_len = usb.ReadBytes(state, sizeof(state), 500);
+  if (state_len < 6 || state[0] != CMD_JOY_GET_STATE)
+  {
+    LogLine(fmt::format("JOY Bus: no answer to GetState ({} bytes: {}). This firmware has no "
+                        "GameCube JOY Bus mode.",
+                        state_len, Hex(state, state_len)));
+    SetStatus(State::Error, "JOY Bus needs test firmware");
+    for (int i = 0; i < 30 && !quitting() && m_owner.IsJoybus(); i++)
+      WaitFor(100);
+    return;
+  }
+  LogLine(fmt::format("JOY Bus mode on: protocol {}, wiring {}, bits {} us", state[1], state[2],
+                      state[4]));
+  SetStatus(State::WaitingForGba, "Start GBA with cartridge");
+  m_joy_device = -1;
+  m_joy_ready = true;
+
+  bool gba_seen = false;
+  auto last_request = Clock::now() - std::chrono::seconds(10);
+  auto last_probe = last_request;
+  auto stat_time = Clock::now();
+  uint64_t stat_ok = 0, stat_none = 0;
+  double stat_ms = 0, stat_ms_max = 0;
+
+  while (true)
+  {
+    JoyRequest req;
+    bool have = false;
+    std::unique_ptr<DumpRequest> dump;
+    {
+      std::unique_lock lock(m_mutex);
+      m_cv.wait_for(lock, std::chrono::milliseconds(200),
+                    [this] { return m_quit || m_joy.pending || m_dump; });
+      if (m_quit)
+        break;
+      dump = std::move(m_dump);
+      if (m_joy.pending)
+      {
+        req = m_joy;
+        have = true;
+      }
+    }
+    if (dump)
+    {
+      DumpResult r;
+      r.error = "Turn off Real cartridge to read a save.";
+      if (dump->done)
+        dump->done(std::move(r));
+    }
+    if (!m_owner.IsJoybus() || usb.Lost())
+      break;
+
+    const auto now = Clock::now();
+    if (have)
+    {
+      const auto t0 = Clock::now();
+      const int got = transfer(req.tx, req.tx_len, req.rx, req.rx_len);
+      const double ms = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+      {
+        std::lock_guard lock(m_mutex);
+        if (m_joy.pending && m_joy.id == req.id)  // (not given up on meanwhile)
+        {
+          std::copy(req.rx, req.rx + 5, m_joy.rx);
+          m_joy.got = got;
+          m_joy.usb_ms = ms;
+          m_joy.pending = false;
+          m_joy.done = true;
+        }
+      }
+      m_joy_cv.notify_all();
+      last_request = Clock::now();
+      (got > 0 ? stat_ok : stat_none)++;
+      stat_ms += ms;
+      stat_ms_max = std::max(stat_ms_max, ms);
+      if (got > 0 && !gba_seen)
+      {
+        gba_seen = true;
+        SetStatus(State::ControllerActive, "Cartridge linked");
+      }
+    }
+    else if (now - last_request > std::chrono::seconds(2) &&
+             now - last_probe > std::chrono::seconds(1))
+    {
+      // Nothing is asking (no game running): a status command, which changes nothing on the GBA,
+      // shows whether a GBA is there. The adapter is free for any port again.
+      last_probe = now;
+      m_joy_device = -1;
+      static const uint8_t status_cmd[] = {0x00};
+      uint8_t rx[5] = {};
+      const bool there = transfer(status_cmd, 1, rx, 3) == 3 && rx[0] == 0x00 && rx[1] == 0x04;
+      if (there != gba_seen || !there)
+      {
+        gba_seen = there;
+        SetStatus(there ? State::AgentIdle : State::WaitingForGba,
+                  there ? "GBA ready" : "Start GBA with cartridge");
+      }
+    }
+
+    if (Clock::now() - stat_time >= std::chrono::seconds(5))
+    {
+      if (stat_ok + stat_none > 0)
+      {
+        LogLine(fmt::format("joybus usb: {} replies, {} unanswered, {:.2f} ms each (max {:.2f}), "
+                            "wiring {}, port {}",
+                            stat_ok, stat_none, stat_ms / (stat_ok + stat_none), stat_ms_max,
+                            wiring, m_joy_device.load() + 1));
+      }
+      stat_ok = stat_none = 0;
+      stat_ms = stat_ms_max = 0;
+      stat_time = Clock::now();
+    }
+  }
+
+  m_joy_ready = false;
+  {
+    std::lock_guard lock(m_mutex);
+    if (m_joy.pending)
+    {
+      m_joy.pending = false;
+      m_joy.got = -1;
+      m_joy.done = true;
+    }
+  }
+  m_joy_cv.notify_all();
+  m_joy_device = -1;
+  if (!usb.Lost())
+    LogLine("JOY Bus mode off");
+}
+
 void Link::Run()
 {
   UsbLink usb;
@@ -308,6 +519,16 @@ void Link::Run()
       agent_loaded = false;
       pad_active = false;
       SetStatus(State::WaitingForGba, "Waiting for GBA");
+    }
+
+    // ---- JOY Bus mode: the adapter is a GameCube port, the GBA runs its cartridge ----------
+    if (m_owner.IsJoybus())
+    {
+      m_pad_live = false;
+      RunJoybus(usb);
+      // Reopening puts the adapter back in GB-Link mode with the multiboot timing.
+      drop_adapter();
+      continue;
     }
 
     try
@@ -857,6 +1078,29 @@ void Manager::SetPortSetting(const std::string& key, int setting)
     if (l && l->Key() == key)
       l->SetPortSetting(setting);
   }
+}
+
+void Manager::SetJoybus(bool on)
+{
+  if (m_joybus.exchange(on) != on)
+    FileLog(on ? "JOY Bus mode requested" : "JOY Bus mode released");
+}
+
+bool Manager::JoyBegin(int device, const uint8_t* tx, int tx_len, int rx_len)
+{
+  Link* l = LinkFor(device);
+  return l && l->JoyBegin(device, tx, tx_len, rx_len);
+}
+
+int Manager::JoyEnd(int device, uint8_t* rx, double* usb_ms)
+{
+  Link* l = LinkFor(device);
+  return l ? l->JoyEnd(rx, usb_ms) : -1;
+}
+
+void Manager::Log(const std::string& line) const
+{
+  FileLog(line);
 }
 
 bool Manager::WantsMirrorFrames(int device) const

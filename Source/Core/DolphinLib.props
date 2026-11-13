@@ -336,6 +336,7 @@
     <ClInclude Include="Core\HW\SI\SI_DeviceAMBaseboard.h" />
     <ClInclude Include="Core\HW\SI\SI_DeviceDanceMat.h" />
     <ClInclude Include="Core\HW\SI\SI_DeviceGBA.h" />
+    <ClInclude Include="Core\HW\SI\SI_DeviceGBALink.h" />
     <ClInclude Include="Core\HW\SI\SI_DeviceGBAEmu.h" />
     <ClInclude Include="Core\HW\SI\SI_DeviceGCAdapter.h" />
     <ClInclude Include="Core\HW\SI\SI_DeviceGCController.h" />
@@ -1075,6 +1076,7 @@
     <ClCompile Include="Core\HW\SI\SI_DeviceAMBaseboard.cpp" />
     <ClCompile Include="Core\HW\SI\SI_DeviceDanceMat.cpp" />
     <ClCompile Include="Core\HW\SI\SI_DeviceGBA.cpp" />
+    <ClCompile Include="Core\HW\SI\SI_DeviceGBALink.cpp" />
     <ClCompile Include="Core\HW\SI\SI_DeviceGBAEmu.cpp" />
     <ClCompile Include="Core\HW\SI\SI_DeviceGCAdapter.cpp" />
     <ClCompile Include="Core\HW\SI\SI_DeviceGCController.cpp" />

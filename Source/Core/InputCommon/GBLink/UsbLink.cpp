@@ -47,8 +47,11 @@ namespace
 {
 constexpr uint16_t kVids[] = {0x2FE3, 0xCAFE, 0x239A};
 
-bool IsGbLinkVid(uint16_t vid)
+// Firmware 3.0.0 moved to pid.codes' shared vendor ID, so the product has to match as well.
+bool IsGbLinkVid(uint16_t vid, uint16_t pid)
 {
+  if (vid == 0x1209)
+    return pid == 0xB011;
   return std::find(std::begin(kVids), std::end(kVids), vid) != std::end(kVids);
 }
 
@@ -271,7 +274,7 @@ std::vector<DeviceInfo> UsbLink::List(std::string* error)
   for (ssize_t i = 0; i < n; i++)
   {
     libusb_device_descriptor d{};
-    if (libusb_get_device_descriptor(list[i], &d) != 0 || !IsGbLinkVid(d.idVendor))
+    if (libusb_get_device_descriptor(list[i], &d) != 0 || !IsGbLinkVid(d.idVendor, d.idProduct))
       continue;
     DeviceInfo info;
     info.vid = d.idVendor;
@@ -323,7 +326,7 @@ bool UsbLink::Open(std::string* error, uint8_t bus, uint8_t address)
   for (ssize_t i = 0; i < n && !found; i++)
   {
     libusb_device_descriptor d{};
-    if (libusb_get_device_descriptor(list[i], &d) != 0 || !IsGbLinkVid(d.idVendor))
+    if (libusb_get_device_descriptor(list[i], &d) != 0 || !IsGbLinkVid(d.idVendor, d.idProduct))
       continue;
     if (bus && (libusb_get_bus_number(list[i]) != bus ||
                 libusb_get_device_address(list[i]) != address))
