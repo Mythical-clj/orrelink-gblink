@@ -80,6 +80,16 @@ const Config::Info<int>& ImportedGameKey(int device)
   return device == 1 ? Config::MAIN_XD_IMPORTED_GAME_2 : Config::MAIN_XD_IMPORTED_GAME_3;
 }
 
+const Config::Info<int>& NativeGameKey(int device)
+{
+  return device == 1 ? Config::MAIN_XD_NATIVE_GAME_2 : Config::MAIN_XD_NATIVE_GAME_3;
+}
+
+int NativeCode(Gen3Game game)
+{
+  return game == Gen3Game::FireRedLeafGreen ? 1 : game == Gen3Game::RubySapphire ? 2 : 0;
+}
+
 std::string BaseName(const std::string& path)
 {
   return path.substr(path.find_last_of("/\\") + 1);
@@ -332,17 +342,38 @@ bool ImportUserSave(const std::string& source_path, int device, std::string* sta
   if (!validation)
     return false;
 
-  const auto rom_game = DetectRomGame(rom, error);
+  auto rom_game = DetectRomGame(rom, error);
   if (!rom_game)
     return false;
-  if (validation->game != *rom_game && *rom_game == Gen3Game::Emerald &&
+
+  // A save of another Gen 3 game runs natively when the player has that game's ROM: the port
+  // switches ROM, the save is used as it is, and nothing about the trainer needs pinning. The
+  // switch is only recorded after the write succeeds.
+  std::string target_rom = rom;
+  std::string save_target = save_path;
+  bool switch_rom = false;
+  if (validation->game != *rom_game)
+  {
+    const std::string library = LibraryRom(validation->game);
+    if (!library.empty())
+    {
+      target_rom = library;
+      save_target = HW::GBA::Core::GetSavePath(library, device);
+      switch_rom = true;
+      if (RefuseIfSaveIsLive(device, save_target, error))
+        return false;
+    }
+  }
+
+  if (!switch_rom && validation->game != *rom_game &&
+      (*rom_game == Gen3Game::Emerald || !LibraryRom(Gen3Game::Emerald).empty()) &&
       (validation->game == Gen3Game::FireRedLeafGreen ||
        validation->game == Gen3Game::RubySapphire))
   {
-    // A FireRed/LeafGreen or Ruby/Sapphire save cannot boot in the Emerald ROM this port runs,
-    // but its party and trainer are all a link battle needs. Rebuild an Emerald save from them
-    // (the same construction a cartridge read and a netplay host use); the trainer keeps the
-    // cartridge's look (Leaf, Red, May, Brendan) in battle.
+    // No ROM for that game: a FireRed/LeafGreen or Ruby/Sapphire save cannot boot in the Emerald
+    // ROM this port runs, but its party and trainer are all a link battle needs. Rebuild an
+    // Emerald save from them (the same construction a cartridge read and a netplay host use);
+    // the trainer keeps the cartridge's look (Leaf, Red, May, Brendan) in battle.
     std::string rebuilt_status;
     if (!ImportTeamFromPartialSave(
             source_path,
@@ -356,12 +387,13 @@ bool ImportUserSave(const std::string& source_path, int device, std::string* sta
     {
       *status = fmt::format(
           "That save is from {}, so its party and trainer were copied into an Emerald save "
-          "(your boxes, items and story are not used).\n\n{}",
-          GameDisplayName(validation->game), rebuilt_status);
+          "(your boxes, items and story are not used).\n\nAdd a {} ROM in the launcher to play "
+          "this save as it is.\n\n{}",
+          GameDisplayName(validation->game), GameDisplayName(validation->game), rebuilt_status);
     }
     return true;
   }
-  if (validation->game != *rom_game)
+  if (!switch_rom && validation->game != *rom_game)
   {
     std::string message = fmt::format(
         "That save is from {}, but this GBA port runs {}. The game itself would refuse a "
@@ -374,14 +406,21 @@ bool ImportUserSave(const std::string& source_path, int device, std::string* sta
 
   // First backup wins, forever: a re-import must never overwrite the record
   // of what the socket held before the FIRST import.
-  const std::string backup_path = save_path + PREIMPORT_SUFFIX;
+  const std::string backup_path = save_target + PREIMPORT_SUFFIX;
   const bool backup_existed = File::Exists(backup_path);
-  const bool had_previous = File::Exists(save_path);
-  if (had_previous && !backup_existed && !File::CopyRegularFile(save_path, backup_path))
+  const bool had_previous = File::Exists(save_target);
+  if (had_previous && !backup_existed && !File::CopyRegularFile(save_target, backup_path))
     return fail("could not back up the current save to " + backup_path + " — nothing was changed");
 
-  if (!WriteFileVerified(save_path, bytes, error))
+  if (!WriteFileVerified(save_target, bytes, error))
     return false;
+
+  // The port now runs the ROM of the save's own game (back to Emerald for an Emerald save).
+  if (switch_rom)
+    Config::SetBase(Config::MAIN_GBA_ROM_PATHS[device], target_rom);
+  Config::SetBase(NativeGameKey(device),
+                  switch_rom || validation->game == Gen3Game::Emerald ? NativeCode(validation->game) :
+                                                                       0);
 
   // Display-only record of what was imported; HasImportBackup stays the
   // authoritative signal.
@@ -399,6 +438,13 @@ bool ImportUserSave(const std::string& source_path, int device, std::string* sta
     const std::string trainer = parsed ? parsed->GetTrainerName() : "?";
     *status = fmt::format("Imported {} ({}, trainer {}).", BaseName(source_path),
                           GameDisplayName(validation->game), trainer);
+    if (switch_rom && validation->game != Gen3Game::Emerald)
+    {
+      *status += fmt::format(
+          " This port now runs your {} ROM, so the save plays exactly as it is: the game itself "
+          "shows the right trainer.",
+          GameDisplayName(validation->game));
+    }
     if (validation->padded_from_64k)
       *status += " The 64 KiB file was padded to the full 128 KiB flash size.";
     if (backup_existed)
@@ -432,7 +478,12 @@ bool RestoreDefaultSave(int device, std::string* error)
   if (device != 1 && device != 2)
     return fail(fmt::format("no such GBA socket ({})", device));
 
-  const std::string save_path = SavePathForDevice(device);
+  // A port running another game's ROM returns to Emerald; that game's own save file stays where it
+  // is for the next time.
+  const std::string emerald_rom = LibraryRom(Gen3Game::Emerald);
+  const bool was_native = Config::Get(NativeGameKey(device)) != 0 && !emerald_rom.empty();
+  const std::string save_path =
+      was_native ? HW::GBA::Core::GetSavePath(emerald_rom, device) : SavePathForDevice(device);
   if (save_path.empty())
     return fail("no GBA ROM configured for that port — run the launcher checklist first");
 
@@ -456,6 +507,9 @@ bool RestoreDefaultSave(int device, std::string* error)
   if (!WriteFileVerified(save_path, bytes, error))
     return false;
 
+  if (was_native)
+    Config::SetBase(Config::MAIN_GBA_ROM_PATHS[device], emerald_rom);
+  Config::SetBase(NativeGameKey(device), 0);
   Config::SetBase(ImportedSaveKey(device), std::string{});
   Config::SetBase(ImportedGameKey(device), 0);
   Config::Save();
@@ -510,6 +564,12 @@ bool ImportTeamFromPartialSave(const std::string& partial_path, const std::strin
     if (model != 0)
     {
       *status += fmt::format("\n\nPlays as {} trainer.", GameDisplayName(game));
+      if (!LibraryRom(game).empty())
+      {
+        *status +=
+            " To play this cartridge's whole save natively instead, tick \"Read full save\" "
+            "and read it again.";
+      }
     }
   }
   return true;
@@ -631,6 +691,153 @@ int CartridgeModelForDevice(int device)
   if (game == 1)
     return gender == 0 ? 0x07 : 0x06;
   return gender == 0 ? 0x09 : 0x08;
+#endif
+}
+
+std::string LibraryRom(Gen3Game game)
+{
+#ifndef HAS_LIBMGBA
+  (void)game;
+  return {};
+#else
+  const auto usable = [game](const std::string& path) {
+    if (path.empty() || !File::Exists(path))
+      return false;
+    const auto detected = DetectRomGame(path);
+    return detected && *detected == game;
+  };
+  const Config::Info<std::string>& key = game == Gen3Game::FireRedLeafGreen ? Config::MAIN_XD_ROM_FRLG :
+                                         game == Gen3Game::RubySapphire     ? Config::MAIN_XD_ROM_RS :
+                                                                              Config::MAIN_XD_ROM_EMERALD;
+  if (const std::string stored = Config::Get(key); usable(stored))
+    return stored;
+  if (game != Gen3Game::Emerald)
+    return {};
+  // Older setups only know the Emerald dump through the ports it was assigned to.
+  for (int i = 0; i < 4; ++i)
+  {
+    const std::string path = Config::Get(Config::MAIN_GBA_ROM_PATHS[i]);
+    if (usable(path))
+      return path;
+  }
+  return {};
+#endif
+}
+
+bool AddLibraryRom(const std::string& source_path, Gen3Game* game_out, std::string* error)
+{
+  const auto fail = [error](std::string message) {
+    if (error)
+      *error = std::move(message);
+    return false;
+  };
+#ifndef HAS_LIBMGBA
+  (void)source_path;
+  (void)game_out;
+  return fail("this build has no GBA support");
+#else
+  std::string detect_error;
+  const auto game = DetectRomGame(source_path, &detect_error);
+  if (!game)
+    return fail(detect_error);
+  std::array<char, 4> code{};
+  {
+    File::IOFile file(source_path, "rb");
+    if (!file || !file.Seek(0xAC, File::SeekOrigin::Begin) ||
+        !file.ReadBytes(code.data(), code.size()))
+    {
+      return fail("could not read the ROM header of " + source_path);
+    }
+  }
+  const std::string family(code.data(), 3);
+  const char* name = family == "BPR"   ? "FIRERED.gba" :
+                     family == "BPG"   ? "LEAFGREEN.gba" :
+                     family == "AXV"   ? "RUBY.gba" :
+                     family == "AXP"   ? "SAPPHIRE.gba" :
+                                         "EMERALD.gba";
+  const std::string destination = File::GetUserPath(D_GBAUSER_IDX) + name;
+  if (source_path != destination)
+  {
+    File::CreateFullPath(destination);
+    if (!File::CopyRegularFile(source_path, destination))
+      return fail("could not copy the ROM into Dolphin's GBA folder");
+  }
+  const Config::Info<std::string>& key = *game == Gen3Game::FireRedLeafGreen ? Config::MAIN_XD_ROM_FRLG :
+                                         *game == Gen3Game::RubySapphire     ? Config::MAIN_XD_ROM_RS :
+                                                                               Config::MAIN_XD_ROM_EMERALD;
+  Config::SetBase(key, destination);
+  Config::Save();
+  if (game_out)
+    *game_out = *game;
+  return true;
+#endif
+}
+
+Gen3Game NativeGameForDevice(int device)
+{
+#ifndef HAS_LIBMGBA
+  (void)device;
+  return Gen3Game::Emerald;
+#else
+  if (device != 1 && device != 2)
+    return Gen3Game::Emerald;
+  const int code = Config::Get(NativeGameKey(device));
+  const Gen3Game game = code == 1 ? Gen3Game::FireRedLeafGreen :
+                        code == 2 ? Gen3Game::RubySapphire :
+                                    Gen3Game::Emerald;
+  // Only while the ROM is still there; otherwise the port falls back to Emerald.
+  if (game != Gen3Game::Emerald && LibraryRom(game).empty())
+    return Gen3Game::Emerald;
+  return game;
+#endif
+}
+
+void ApplyPortRoms(bool all_emerald)
+{
+#ifdef HAS_LIBMGBA
+  const std::string emerald = LibraryRom(Gen3Game::Emerald);
+  if (emerald.empty())
+    return;
+  for (int i = 0; i < 4; ++i)
+  {
+    std::string rom = emerald;
+    if (!all_emerald && (i == 1 || i == 2))
+    {
+      if (const Gen3Game game = NativeGameForDevice(i); game != Gen3Game::Emerald)
+        rom = LibraryRom(game);
+    }
+    Config::SetBaseOrCurrent(Config::MAIN_GBA_ROM_PATHS[i], rom);
+  }
+#else
+  (void)all_emerald;
+#endif
+}
+
+bool PrepareNativePortsForRoom(std::string* error)
+{
+#ifndef HAS_LIBMGBA
+  (void)error;
+  return true;
+#else
+  for (const int device : {1, 2})
+  {
+    if (NativeGameForDevice(device) == Gen3Game::Emerald)
+      continue;
+    // Read the native save through the port's own ROM, then rebuild it as Emerald.
+    const std::string native_path = SavePathForDevice(device);
+    if (native_path.empty() || !File::Exists(native_path))
+      continue;
+    std::string rebuilt_status;
+    if (!ImportTeamFromPartialSave(native_path,
+                                   File::GetUserPath(D_USER_IDX) + "GBLink Dumps/team-port" +
+                                       std::to_string(device) + ".sav",
+                                   device, &rebuilt_status, error))
+    {
+      return false;
+    }
+  }
+  ApplyPortRoms(false);
+  return true;
 #endif
 }
 

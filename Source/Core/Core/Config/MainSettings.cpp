@@ -444,6 +444,11 @@ const Info<std::string> MAIN_XD_IMPORTED_SAVE_3{{System::Main, "XDNetplay", "Imp
 const Info<bool> MAIN_GBLINK_JOYBUS{{System::Main, "XDNetplay", "GBLinkJoybus"}, true};
 const Info<int> MAIN_XD_IMPORTED_GAME_2{{System::Main, "XDNetplay", "ImportedGame2"}, 0};
 const Info<int> MAIN_XD_IMPORTED_GAME_3{{System::Main, "XDNetplay", "ImportedGame3"}, 0};
+const Info<std::string> MAIN_XD_ROM_EMERALD{{System::Main, "XDNetplay", "RomEmerald"}, ""};
+const Info<std::string> MAIN_XD_ROM_FRLG{{System::Main, "XDNetplay", "RomFrlg"}, ""};
+const Info<std::string> MAIN_XD_ROM_RS{{System::Main, "XDNetplay", "RomRs"}, ""};
+const Info<int> MAIN_XD_NATIVE_GAME_2{{System::Main, "XDNetplay", "NativeGame2"}, 0};
+const Info<int> MAIN_XD_NATIVE_GAME_3{{System::Main, "XDNetplay", "NativeGame3"}, 0};
 const Info<std::string> MAIN_XD_SUBMIT_TEAM_B64{{System::Main, "XDNetplay", "SubmitTeamB64"}, ""};
 const Info<std::string> MAIN_XD_SUBMIT_NAME{{System::Main, "XDNetplay", "SubmitName"}, ""};
 const Info<int> MAIN_XD_SUBMIT_MODEL{{System::Main, "XDNetplay", "SubmitModel"}, 0};

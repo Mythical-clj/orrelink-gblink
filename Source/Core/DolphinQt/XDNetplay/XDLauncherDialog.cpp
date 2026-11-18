@@ -195,6 +195,10 @@ bool IsEmeraldRom(const std::string& path)
 
 bool EmeraldRomConfigured()
 {
+#ifdef HAS_LIBMGBA
+  if (!XDNetplay::SaveImport::LibraryRom(XDNetplay::Gen3Game::Emerald).empty())
+    return true;
+#endif
   const std::string rom_path = Config::Get(Config::MAIN_GBA_ROM_PATHS[1]);
   return !rom_path.empty() && File::Exists(rom_path);
 }
@@ -210,6 +214,7 @@ bool ImportEmeraldRom(const std::string& source)
     if (!File::CopyRegularFile(source, destination))
       return false;
   }
+  Config::SetBaseOrCurrent(Config::MAIN_XD_ROM_EMERALD, destination);
   Config::SetBaseOrCurrent(Config::MAIN_GBA_ROM_PATHS[1], destination);
   Config::SetBaseOrCurrent(Config::MAIN_GBA_ROM_PATHS[2], destination);
   Config::Save();
@@ -219,8 +224,14 @@ bool ImportEmeraldRom(const std::string& source)
 bool TeamSavesInstalled()
 {
 #ifdef HAS_LIBMGBA
-  const std::string rom2 = Config::Get(Config::MAIN_GBA_ROM_PATHS[1]);
-  const std::string rom3 = Config::Get(Config::MAIN_GBA_ROM_PATHS[2]);
+  // The default team saves belong to the Emerald ROM, even while a port runs another game.
+  std::string rom2 = XDNetplay::SaveImport::LibraryRom(XDNetplay::Gen3Game::Emerald);
+  std::string rom3 = rom2;
+  if (rom2.empty())
+  {
+    rom2 = Config::Get(Config::MAIN_GBA_ROM_PATHS[1]);
+    rom3 = Config::Get(Config::MAIN_GBA_ROM_PATHS[2]);
+  }
   return !rom2.empty() && !rom3.empty() && File::Exists(HW::GBA::Core::GetSavePath(rom2, 1)) &&
          File::Exists(HW::GBA::Core::GetSavePath(rom3, 2));
 #else
@@ -254,6 +265,28 @@ void SetRowState(QLabel* status, bool ok)
   status->setText(ok ? QStringLiteral("✔") : QStringLiteral("✘"));
   status->setStyleSheet(ok ? QStringLiteral("QLabel { color: green; }") :
                              QStringLiteral("QLabel { color: red; }"));
+}
+
+// A hosted room runs both GBAs on Emerald. A port that holds a FireRed/LeafGreen or Ruby/Sapphire
+// save natively is rebuilt as an Emerald save with the cartridge's trainer first (the older
+// behaviour); a failure is shown and the room is not hosted.
+bool PrepareNativePortsForHosting(QWidget* parent)
+{
+#ifdef HAS_LIBMGBA
+  std::string error;
+  if (!XDNetplay::SaveImport::PrepareNativePortsForRoom(&error))
+  {
+    ModalMessageBox::warning(
+        parent, QObject::tr("OrreLink"),
+        QObject::tr("A room runs Emerald, and your FireRed/LeafGreen or Ruby/Sapphire save could "
+                    "not be copied into one: %1")
+            .arg(QString::fromStdString(error)));
+    return false;
+  }
+#else
+  (void)parent;
+#endif
+  return true;
 }
 
 // Traversal-server settings shared by hosting and joining.
@@ -515,6 +548,28 @@ void XDLauncherDialog::CreateMainLayout()
   agent_layout->setColumnStretch(0, 1);
   agent_box->setLayout(agent_layout);
   mgba_layout->addWidget(agent_box);
+  {
+    // Optional ROMs for the other Gen 3 games: a port that holds a FireRed/LeafGreen or
+    // Ruby/Sapphire save then runs that game as it is, instead of an Emerald rebuild.
+    auto* roms_box = new QGroupBox(tr("Other Pokémon ROMs (optional)"));
+    auto* roms_layout = new QGridLayout;
+    const auto add_rom_row = [&](ChecklistRow* target, int row, const QString& description) {
+      target->status = new QLabel(QStringLiteral("✘"));
+      target->description = new QLabel(description);
+      target->fix_button = new NonDefaultQPushButton(tr("Choose ROM..."));
+      roms_layout->addWidget(target->status, row, 0);
+      roms_layout->addWidget(target->description, row, 1);
+      roms_layout->addWidget(target->fix_button, row, 2);
+    };
+    add_rom_row(&m_frlg_rom_row, 0, tr("FireRed / LeafGreen"));
+    add_rom_row(&m_rs_rom_row, 1, tr("Ruby / Sapphire"));
+    roms_layout->setColumnStretch(1, 1);
+    roms_box->setLayout(roms_layout);
+    roms_box->setToolTip(
+        tr("With a ROM here, importing a save from that game plays it natively. Without one the "
+           "save is rebuilt as Emerald."));
+    mgba_layout->addWidget(roms_box);
+  }
   m_gblink_joybus_check = new QCheckBox(tr("Real GBA"));
   m_gblink_joybus_check->setChecked(Config::Get(Config::MAIN_GBLINK_JOYBUS));
   m_gblink_joybus_check->setToolTip(tr("Cartridge over JOY Bus"));
@@ -1003,6 +1058,9 @@ void XDLauncherDialog::ConnectWidgets()
 
   connect(m_game_row.fix_button, &QPushButton::clicked, this, &XDLauncherDialog::OnFixGamePath);
   connect(m_rom_row.fix_button, &QPushButton::clicked, this, &XDLauncherDialog::OnFixEmeraldRom);
+  connect(m_frlg_rom_row.fix_button, &QPushButton::clicked, this,
+          [this] { OnAddNativeRom(false); });
+  connect(m_rs_rom_row.fix_button, &QPushButton::clicked, this, [this] { OnAddNativeRom(true); });
   connect(m_bios_row.fix_button, &QPushButton::clicked, this, &XDLauncherDialog::OnFixBios);
   connect(m_gba_input_row.fix_button, &QPushButton::clicked, this,
           &XDLauncherDialog::OnFixGbaInput);
@@ -1265,6 +1323,12 @@ void XDLauncherDialog::RefreshChecklist()
 
   SetRowState(m_game_row.status, FindXdGame() != nullptr);
   SetRowState(m_rom_row.status, EmeraldRomConfigured());
+#ifdef HAS_LIBMGBA
+  SetRowState(m_frlg_rom_row.status,
+              !XDNetplay::SaveImport::LibraryRom(XDNetplay::Gen3Game::FireRedLeafGreen).empty());
+  SetRowState(m_rs_rom_row.status,
+              !XDNetplay::SaveImport::LibraryRom(XDNetplay::Gen3Game::RubySapphire).empty());
+#endif
   // Not required. The bundled open-source BIOS links fine now that the
   // auto-reset no longer races Emerald's connection handshake (the reset was
   // the real problem, never the BIOS). An official dump is still used if the
@@ -1932,6 +1996,41 @@ void XDLauncherDialog::OnFixEmeraldRom()
   RefreshChecklist();
 }
 
+void XDLauncherDialog::OnAddNativeRom(bool ruby_sapphire)
+{
+#ifdef HAS_LIBMGBA
+  const QString path = QFileDialog::getOpenFileName(
+      this, ruby_sapphire ? tr("Select a Ruby or Sapphire ROM") : tr("Select a FireRed or LeafGreen ROM"),
+      QString(), tr("GBA ROMs (*.gba)"));
+  if (path.isEmpty())
+    return;
+
+  XDNetplay::Gen3Game game = XDNetplay::Gen3Game::Emerald;
+  std::string error;
+  if (!XDNetplay::SaveImport::AddLibraryRom(path.toStdString(), &game, &error))
+  {
+    ModalMessageBox::warning(this, tr("OrreLink"), QString::fromStdString(error));
+    return;
+  }
+  const bool expected_rs = ruby_sapphire;
+  if (game == XDNetplay::Gen3Game::Emerald)
+  {
+    ModalMessageBox::information(this, tr("OrreLink"),
+                                 tr("That is an Emerald ROM — it was set as the Emerald ROM."));
+  }
+  else if ((game == XDNetplay::Gen3Game::RubySapphire) != expected_rs)
+  {
+    ModalMessageBox::information(
+        this, tr("OrreLink"),
+        tr("That ROM is %1, so it was added there instead.")
+            .arg(QString::fromUtf8(XDNetplay::GameDisplayName(game))));
+  }
+  RefreshChecklist();
+#else
+  (void)ruby_sapphire;
+#endif
+}
+
 void XDLauncherDialog::OnFixTeamSaves()
 {
   if (!EmeraldRomConfigured())
@@ -2038,6 +2137,8 @@ void XDLauncherDialog::OnHost()
     return;
   }
 
+  if (!PrepareNativePortsForHosting(this))
+    return;
   PrepareNetplayConfig();
   // A manually hosted room is published too -- otherwise nobody can find it
   // except by the host reading their code aloud, which is exactly the workflow
@@ -2171,6 +2272,8 @@ void XDLauncherDialog::FinishSearch(bool listed, const std::optional<NetPlaySess
                     "leave the NetPlay window open and wait for an opponent."));
   PreparePublishConfig(true);
   Config::Save();
+  if (!PrepareNativePortsForHosting(this))
+    return;
   emit HostXD(*game);
 }
 

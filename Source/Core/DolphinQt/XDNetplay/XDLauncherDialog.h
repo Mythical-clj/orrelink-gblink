@@ -94,6 +94,7 @@ private:
 
   void OnFixGamePath();
   void OnFixEmeraldRom();
+  void OnAddNativeRom(bool ruby_sapphire);
   void OnFixBios();
   void OnFixGbaInput();
   void OnFixTeamSaves();
@@ -128,6 +129,8 @@ private:
 
   ChecklistRow m_game_row;
   ChecklistRow m_rom_row;
+  ChecklistRow m_frlg_rom_row;
+  ChecklistRow m_rs_rom_row;
   ChecklistRow m_bios_row;
   ChecklistRow m_team_saves_row;
   ChecklistRow m_vs_save_row;

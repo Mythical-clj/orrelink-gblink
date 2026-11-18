@@ -298,6 +298,14 @@ extern const Info<std::string> MAIN_XD_IMPORTED_SAVE_3;  // GBA port 3 (device 2
 extern const Info<bool> MAIN_GBLINK_JOYBUS;
 extern const Info<int> MAIN_XD_IMPORTED_GAME_2;
 extern const Info<int> MAIN_XD_IMPORTED_GAME_3;
+// The Pokemon ROMs the launcher keeps for the emulated GBA ports (Emerald is the default; the others
+// are optional), and the game each of ports 2 and 3 runs natively (0 = Emerald, 1 = FireRed/LeafGreen,
+// 2 = Ruby/Sapphire).
+extern const Info<std::string> MAIN_XD_ROM_EMERALD;
+extern const Info<std::string> MAIN_XD_ROM_FRLG;
+extern const Info<std::string> MAIN_XD_ROM_RS;
+extern const Info<int> MAIN_XD_NATIVE_GAME_2;
+extern const Info<int> MAIN_XD_NATIVE_GAME_3;
 
 // Guest Submit Team dialog persistence, so a joiner does not retype the team,
 // name and model every session: prefilled into the dialog on open, stored on

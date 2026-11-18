@@ -38,6 +38,7 @@
 #endif
 #include "UICommon/XDNetplay/DisposableSave.h"
 #include "UICommon/XDNetplay/FormatRules.h"
+#include "UICommon/XDNetplay/SaveImport.h"
 
 namespace XDNetplay
 {
@@ -107,12 +108,9 @@ bool EnsureGbaConfig(bool multi_solo)
   // and 3 for a 1v1 link, all four for a multi battle. Re-assert them only
   // while the stored path still exists on disk, so a deleted dump shows up as
   // a red checklist row instead of being silently re-broken at boot.
-  const std::string rom_path = Config::Get(Config::MAIN_GBA_ROM_PATHS[1]);
-  if (!rom_path.empty() && File::Exists(rom_path))
-  {
-    for (int i = 0; i < 4; ++i)
-      Config::SetBaseOrCurrent(Config::MAIN_GBA_ROM_PATHS[i], rom_path);
-  }
+  // A port holding a FireRed/LeafGreen or Ruby/Sapphire save runs that game's ROM when the player
+  // added one; every other port (and every port of a multi battle) runs Emerald.
+  SaveImport::ApplyPortRoms(multi_solo);
 
   // Port 1 pad, ports 2/3 integrated GBAs -- the fixed XD link layout. With
   // Multi enabled a Wii U adapter on port 1 stays (a multi battle reads the
@@ -476,8 +474,14 @@ bool ApplyDefaultGbaInput()
 bool SeedTeamSaves()
 {
 #ifdef HAS_LIBMGBA
-  const std::string rom2 = Config::Get(Config::MAIN_GBA_ROM_PATHS[1]);
-  const std::string rom3 = Config::Get(Config::MAIN_GBA_ROM_PATHS[2]);
+  // The default team saves belong to the Emerald ROM, whichever game a port runs right now.
+  std::string rom2 = SaveImport::LibraryRom(Gen3Game::Emerald);
+  std::string rom3 = rom2;
+  if (rom2.empty())
+  {
+    rom2 = Config::Get(Config::MAIN_GBA_ROM_PATHS[1]);
+    rom3 = Config::Get(Config::MAIN_GBA_ROM_PATHS[2]);
+  }
   if (rom2.empty() || rom3.empty())
     return false;
 

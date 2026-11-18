@@ -80,7 +80,9 @@ MultiStartOutcome PrepareMultiStart(NetPlay::NetPlayServer& server,
 
   // 9: one Emerald dump for all four GBAs.
 #ifdef HAS_LIBMGBA
-  std::string rom = Config::Get(Config::MAIN_GBA_ROM_PATHS[1]);
+  std::string rom = SaveImport::LibraryRom(Gen3Game::Emerald);
+  if (rom.empty())
+    rom = Config::Get(Config::MAIN_GBA_ROM_PATHS[1]);
   if (rom.empty() || !File::Exists(rom))
     rom = Config::Get(Config::MAIN_GBA_ROM_PATHS[2]);
   if (rom.empty() || !File::Exists(rom))
@@ -212,7 +214,9 @@ MultiStartOutcome PrepareWatchStart(NetPlay::NetPlayServer& server,
 
   // One Emerald dump for both GBAs.
 #ifdef HAS_LIBMGBA
-  std::string rom = Config::Get(Config::MAIN_GBA_ROM_PATHS[1]);
+  std::string rom = SaveImport::LibraryRom(Gen3Game::Emerald);
+  if (rom.empty())
+    rom = Config::Get(Config::MAIN_GBA_ROM_PATHS[1]);
   if (rom.empty() || !File::Exists(rom))
     rom = Config::Get(Config::MAIN_GBA_ROM_PATHS[2]);
   if (rom.empty() || !File::Exists(rom))

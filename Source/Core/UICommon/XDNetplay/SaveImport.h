@@ -100,6 +100,36 @@ bool RestoreDefaultSave(int device, std::string* error);
 // player appear as Leaf instead of May.
 int CartridgeModelForDevice(int device);
 
+// ---------------------------------------------------------------------------
+// Native ROMs
+// ---------------------------------------------------------------------------
+// The emulated GBA ports normally run Emerald, and a FireRed/LeafGreen or Ruby/Sapphire save is
+// rebuilt as an Emerald save with the cartridge's trainer pinned. When the player has a ROM for the
+// save's own game, the port can run that ROM instead and the save is used exactly as it is: the
+// trainer, bust and party then come from the game itself and nothing is pinned.
+
+// The ROM the launcher holds for |game| (Emerald, FireRed/LeafGreen, Ruby/Sapphire), or empty when
+// there is none on disk. Emerald falls back to whichever configured GBA port already holds an
+// Emerald ROM.
+std::string LibraryRom(Gen3Game game);
+
+// Copy a FireRed/LeafGreen or Ruby/Sapphire ROM into Dolphin's GBA folder and remember it. Emerald
+// has its own picker. On failure *error says why (not a Gen 3 Pokemon ROM, copy failed).
+bool AddLibraryRom(const std::string& source_path, Gen3Game* game_out, std::string* error);
+
+// The game GBA socket |device| (1 = port 2, 2 = port 3) runs natively; Emerald unless a save of
+// another game was imported and its ROM is available.
+Gen3Game NativeGameForDevice(int device);
+
+// Point ports 0-3 at the right ROM: Emerald everywhere, except sockets 1 and 2 when they hold a
+// native save. |all_emerald| (a Multi battle) forces Emerald on every port.
+void ApplyPortRoms(bool all_emerald);
+
+// A hosted room runs both GBAs on Emerald. Rebuild every native FireRed/LeafGreen or
+// Ruby/Sapphire import as an Emerald save with the cartridge's trainer (the older behaviour), so
+// the room can be hosted. Returns false with *error when a rebuild fails.
+bool PrepareNativePortsForRoom(std::string* error);
+
 // True when <save>.preimport exists for the socket. This -- not the config
 // key, which is display-only -- is the authoritative "an import happened"
 // signal, so a hand-deleted file cannot desync the UI.
