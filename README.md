@@ -74,6 +74,7 @@ need it), for adapters on stock firmware:
 |---|---|
 | **Real GBA as the controller** | Power the GBA on holding START + SELECT (cartridge in or out). OrreLink sends it a small program (the *agent*, about 20 KB, over the multiboot link) and the GBA's buttons then drive the emulated GBA. Hold L + R + Start + Select for 2 seconds to release it. |
 | **Read my cartridge** | Reads the party and trainer sections of a Gen 3 save through the agent (Emerald, FireRed, LeafGreen, and Ruby/Sapphire as far as the format allows), read-only. A full dump is a checkbox. The result becomes your GBA port 2 save, with a raw backup in `User/GBLink Dumps`. A FireRed, LeafGreen, Ruby or Sapphire save is rebuilt into an Emerald save with the same party and trainer, so a LeafGreen team can battle (it still appears as Leaf). Boxes, items and story are not used. |
+| **Other Pokémon ROMs (optional)** | Under *Other Pokémon ROMs* you can add a FireRed/LeafGreen ROM and a Ruby/Sapphire ROM (your own dumps). With one added, importing a save from that game (or a full cartridge read) switches that emulated port to the game's own ROM and plays the save exactly as it is, so the trainer, party and look come from the game itself. Without the ROM the save is rebuilt as an Emerald save as before. A hosted room still runs Emerald on both GBAs, so a native port is rebuilt as Emerald first; "Restore default" returns a port to Emerald. |
 | **Team goes with you into a room** | After a cartridge read, joining an XD room sends that team to the host on its own. Submit Team still works for a Showdown paste. |
 | **Menu navigation (optional)** | The real GBA can also drive XD's own menus as the GameCube pad on port 1. |
 | **Screen mirroring** | The emulated GBA's screen (your move menu) is drawn on the real GBA, as changed tiles packed between the controller polls. |
@@ -115,7 +116,7 @@ need it), for adapters on stock firmware:
 - The fork is a series of patches on a pinned Dolphin base: `patches/0001`
   to `0183` are upstream OrreLink up to the point this fork began, `0184` to
   `0188` are later upstream releases (v1.8.2 and v1.8.3, battle records), and
-  `0189` to `0221` are the GB-Link work. CI applies them in order.
+  `0189` to `0222` are the GB-Link work. CI applies them in order.
 
 ### Credits for this fork
 

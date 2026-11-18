@@ -1,0 +1,689 @@
+From 0220d55ebf099583905f801d486ac424894d02af Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 18 Nov 2026 15:37:08 -0600
+Subject: [PATCH] Native FireRed/LeafGreen and Ruby/Sapphire ROMs for the
+ emulated GBA ports
+
+The launcher keeps optional ROMs for the other Gen 3 games. Importing a save from one of them
+switches that port to the game's own ROM and uses the save as it is, so the trainer, bust and party
+come from the game and no model is pinned. Without the ROM the old Emerald rebuild remains. A hosted
+room still runs Emerald on both GBAs, so native ports are rebuilt as Emerald first. Restoring the
+default save returns the port to Emerald.
+---
+ Source/Core/Core/Config/MainSettings.cpp      |   5 +
+ Source/Core/Core/Config/MainSettings.h        |   8 +
+ .../DolphinQt/XDNetplay/XDLauncherDialog.cpp  | 107 +++++++-
+ .../DolphinQt/XDNetplay/XDLauncherDialog.h    |   3 +
+ .../DolphinQt/XDNetplay/XDNetplayConfig.cpp   |  20 +-
+ Source/Core/UICommon/XDNetplay/MultiStart.cpp |   8 +-
+ Source/Core/UICommon/XDNetplay/SaveImport.cpp | 235 ++++++++++++++++--
+ Source/Core/UICommon/XDNetplay/SaveImport.h   |  30 +++
+ 8 files changed, 390 insertions(+), 26 deletions(-)
+
+diff --git a/Source/Core/Core/Config/MainSettings.cpp b/Source/Core/Core/Config/MainSettings.cpp
+index 2ec57e64f..0df186b6b 100644
+--- a/Source/Core/Core/Config/MainSettings.cpp
++++ b/Source/Core/Core/Config/MainSettings.cpp
+@@ -444,6 +444,11 @@ const Info<std::string> MAIN_XD_IMPORTED_SAVE_3{{System::Main, "XDNetplay", "Imp
+ const Info<bool> MAIN_GBLINK_JOYBUS{{System::Main, "XDNetplay", "GBLinkJoybus"}, true};
+ const Info<int> MAIN_XD_IMPORTED_GAME_2{{System::Main, "XDNetplay", "ImportedGame2"}, 0};
+ const Info<int> MAIN_XD_IMPORTED_GAME_3{{System::Main, "XDNetplay", "ImportedGame3"}, 0};
++const Info<std::string> MAIN_XD_ROM_EMERALD{{System::Main, "XDNetplay", "RomEmerald"}, ""};
++const Info<std::string> MAIN_XD_ROM_FRLG{{System::Main, "XDNetplay", "RomFrlg"}, ""};
++const Info<std::string> MAIN_XD_ROM_RS{{System::Main, "XDNetplay", "RomRs"}, ""};
++const Info<int> MAIN_XD_NATIVE_GAME_2{{System::Main, "XDNetplay", "NativeGame2"}, 0};
++const Info<int> MAIN_XD_NATIVE_GAME_3{{System::Main, "XDNetplay", "NativeGame3"}, 0};
+ const Info<std::string> MAIN_XD_SUBMIT_TEAM_B64{{System::Main, "XDNetplay", "SubmitTeamB64"}, ""};
+ const Info<std::string> MAIN_XD_SUBMIT_NAME{{System::Main, "XDNetplay", "SubmitName"}, ""};
+ const Info<int> MAIN_XD_SUBMIT_MODEL{{System::Main, "XDNetplay", "SubmitModel"}, 0};
+diff --git a/Source/Core/Core/Config/MainSettings.h b/Source/Core/Core/Config/MainSettings.h
+index 8e6df4eac..37aa5a325 100644
+--- a/Source/Core/Core/Config/MainSettings.h
++++ b/Source/Core/Core/Config/MainSettings.h
+@@ -298,6 +298,14 @@ extern const Info<std::string> MAIN_XD_IMPORTED_SAVE_3;  // GBA port 3 (device 2
+ extern const Info<bool> MAIN_GBLINK_JOYBUS;
+ extern const Info<int> MAIN_XD_IMPORTED_GAME_2;
+ extern const Info<int> MAIN_XD_IMPORTED_GAME_3;
++// The Pokemon ROMs the launcher keeps for the emulated GBA ports (Emerald is the default; the others
++// are optional), and the game each of ports 2 and 3 runs natively (0 = Emerald, 1 = FireRed/LeafGreen,
++// 2 = Ruby/Sapphire).
++extern const Info<std::string> MAIN_XD_ROM_EMERALD;
++extern const Info<std::string> MAIN_XD_ROM_FRLG;
++extern const Info<std::string> MAIN_XD_ROM_RS;
++extern const Info<int> MAIN_XD_NATIVE_GAME_2;
++extern const Info<int> MAIN_XD_NATIVE_GAME_3;
+ 
+ // Guest Submit Team dialog persistence, so a joiner does not retype the team,
+ // name and model every session: prefilled into the dialog on open, stored on
+diff --git a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
+index ad1941ed4..2188bb7d0 100644
+--- a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
++++ b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
+@@ -195,6 +195,10 @@ bool IsEmeraldRom(const std::string& path)
+ 
+ bool EmeraldRomConfigured()
+ {
++#ifdef HAS_LIBMGBA
++  if (!XDNetplay::SaveImport::LibraryRom(XDNetplay::Gen3Game::Emerald).empty())
++    return true;
++#endif
+   const std::string rom_path = Config::Get(Config::MAIN_GBA_ROM_PATHS[1]);
+   return !rom_path.empty() && File::Exists(rom_path);
+ }
+@@ -210,6 +214,7 @@ bool ImportEmeraldRom(const std::string& source)
+     if (!File::CopyRegularFile(source, destination))
+       return false;
+   }
++  Config::SetBaseOrCurrent(Config::MAIN_XD_ROM_EMERALD, destination);
+   Config::SetBaseOrCurrent(Config::MAIN_GBA_ROM_PATHS[1], destination);
+   Config::SetBaseOrCurrent(Config::MAIN_GBA_ROM_PATHS[2], destination);
+   Config::Save();
+@@ -219,8 +224,14 @@ bool ImportEmeraldRom(const std::string& source)
+ bool TeamSavesInstalled()
+ {
+ #ifdef HAS_LIBMGBA
+-  const std::string rom2 = Config::Get(Config::MAIN_GBA_ROM_PATHS[1]);
+-  const std::string rom3 = Config::Get(Config::MAIN_GBA_ROM_PATHS[2]);
++  // The default team saves belong to the Emerald ROM, even while a port runs another game.
++  std::string rom2 = XDNetplay::SaveImport::LibraryRom(XDNetplay::Gen3Game::Emerald);
++  std::string rom3 = rom2;
++  if (rom2.empty())
++  {
++    rom2 = Config::Get(Config::MAIN_GBA_ROM_PATHS[1]);
++    rom3 = Config::Get(Config::MAIN_GBA_ROM_PATHS[2]);
++  }
+   return !rom2.empty() && !rom3.empty() && File::Exists(HW::GBA::Core::GetSavePath(rom2, 1)) &&
+          File::Exists(HW::GBA::Core::GetSavePath(rom3, 2));
+ #else
+@@ -256,6 +267,28 @@ void SetRowState(QLabel* status, bool ok)
+                              QStringLiteral("QLabel { color: red; }"));
+ }
+ 
++// A hosted room runs both GBAs on Emerald. A port that holds a FireRed/LeafGreen or Ruby/Sapphire
++// save natively is rebuilt as an Emerald save with the cartridge's trainer first (the older
++// behaviour); a failure is shown and the room is not hosted.
++bool PrepareNativePortsForHosting(QWidget* parent)
++{
++#ifdef HAS_LIBMGBA
++  std::string error;
++  if (!XDNetplay::SaveImport::PrepareNativePortsForRoom(&error))
++  {
++    ModalMessageBox::warning(
++        parent, QObject::tr("OrreLink"),
++        QObject::tr("A room runs Emerald, and your FireRed/LeafGreen or Ruby/Sapphire save could "
++                    "not be copied into one: %1")
++            .arg(QString::fromStdString(error)));
++    return false;
++  }
++#else
++  (void)parent;
++#endif
++  return true;
++}
++
+ // Traversal-server settings shared by hosting and joining.
+ void PrepareNetplayConfig()
+ {
+@@ -515,6 +548,28 @@ void XDLauncherDialog::CreateMainLayout()
+   agent_layout->setColumnStretch(0, 1);
+   agent_box->setLayout(agent_layout);
+   mgba_layout->addWidget(agent_box);
++  {
++    // Optional ROMs for the other Gen 3 games: a port that holds a FireRed/LeafGreen or
++    // Ruby/Sapphire save then runs that game as it is, instead of an Emerald rebuild.
++    auto* roms_box = new QGroupBox(tr("Other Pokémon ROMs (optional)"));
++    auto* roms_layout = new QGridLayout;
++    const auto add_rom_row = [&](ChecklistRow* target, int row, const QString& description) {
++      target->status = new QLabel(QStringLiteral("✘"));
++      target->description = new QLabel(description);
++      target->fix_button = new NonDefaultQPushButton(tr("Choose ROM..."));
++      roms_layout->addWidget(target->status, row, 0);
++      roms_layout->addWidget(target->description, row, 1);
++      roms_layout->addWidget(target->fix_button, row, 2);
++    };
++    add_rom_row(&m_frlg_rom_row, 0, tr("FireRed / LeafGreen"));
++    add_rom_row(&m_rs_rom_row, 1, tr("Ruby / Sapphire"));
++    roms_layout->setColumnStretch(1, 1);
++    roms_box->setLayout(roms_layout);
++    roms_box->setToolTip(
++        tr("With a ROM here, importing a save from that game plays it natively. Without one the "
++           "save is rebuilt as Emerald."));
++    mgba_layout->addWidget(roms_box);
++  }
+   m_gblink_joybus_check = new QCheckBox(tr("Real GBA"));
+   m_gblink_joybus_check->setChecked(Config::Get(Config::MAIN_GBLINK_JOYBUS));
+   m_gblink_joybus_check->setToolTip(tr("Cartridge over JOY Bus"));
+@@ -1003,6 +1058,9 @@ void XDLauncherDialog::ConnectWidgets()
+ 
+   connect(m_game_row.fix_button, &QPushButton::clicked, this, &XDLauncherDialog::OnFixGamePath);
+   connect(m_rom_row.fix_button, &QPushButton::clicked, this, &XDLauncherDialog::OnFixEmeraldRom);
++  connect(m_frlg_rom_row.fix_button, &QPushButton::clicked, this,
++          [this] { OnAddNativeRom(false); });
++  connect(m_rs_rom_row.fix_button, &QPushButton::clicked, this, [this] { OnAddNativeRom(true); });
+   connect(m_bios_row.fix_button, &QPushButton::clicked, this, &XDLauncherDialog::OnFixBios);
+   connect(m_gba_input_row.fix_button, &QPushButton::clicked, this,
+           &XDLauncherDialog::OnFixGbaInput);
+@@ -1265,6 +1323,12 @@ void XDLauncherDialog::RefreshChecklist()
+ 
+   SetRowState(m_game_row.status, FindXdGame() != nullptr);
+   SetRowState(m_rom_row.status, EmeraldRomConfigured());
++#ifdef HAS_LIBMGBA
++  SetRowState(m_frlg_rom_row.status,
++              !XDNetplay::SaveImport::LibraryRom(XDNetplay::Gen3Game::FireRedLeafGreen).empty());
++  SetRowState(m_rs_rom_row.status,
++              !XDNetplay::SaveImport::LibraryRom(XDNetplay::Gen3Game::RubySapphire).empty());
++#endif
+   // Not required. The bundled open-source BIOS links fine now that the
+   // auto-reset no longer races Emerald's connection handshake (the reset was
+   // the real problem, never the BIOS). An official dump is still used if the
+@@ -1932,6 +1996,41 @@ void XDLauncherDialog::OnFixEmeraldRom()
+   RefreshChecklist();
+ }
+ 
++void XDLauncherDialog::OnAddNativeRom(bool ruby_sapphire)
++{
++#ifdef HAS_LIBMGBA
++  const QString path = QFileDialog::getOpenFileName(
++      this, ruby_sapphire ? tr("Select a Ruby or Sapphire ROM") : tr("Select a FireRed or LeafGreen ROM"),
++      QString(), tr("GBA ROMs (*.gba)"));
++  if (path.isEmpty())
++    return;
++
++  XDNetplay::Gen3Game game = XDNetplay::Gen3Game::Emerald;
++  std::string error;
++  if (!XDNetplay::SaveImport::AddLibraryRom(path.toStdString(), &game, &error))
++  {
++    ModalMessageBox::warning(this, tr("OrreLink"), QString::fromStdString(error));
++    return;
++  }
++  const bool expected_rs = ruby_sapphire;
++  if (game == XDNetplay::Gen3Game::Emerald)
++  {
++    ModalMessageBox::information(this, tr("OrreLink"),
++                                 tr("That is an Emerald ROM — it was set as the Emerald ROM."));
++  }
++  else if ((game == XDNetplay::Gen3Game::RubySapphire) != expected_rs)
++  {
++    ModalMessageBox::information(
++        this, tr("OrreLink"),
++        tr("That ROM is %1, so it was added there instead.")
++            .arg(QString::fromUtf8(XDNetplay::GameDisplayName(game))));
++  }
++  RefreshChecklist();
++#else
++  (void)ruby_sapphire;
++#endif
++}
++
+ void XDLauncherDialog::OnFixTeamSaves()
+ {
+   if (!EmeraldRomConfigured())
+@@ -2038,6 +2137,8 @@ void XDLauncherDialog::OnHost()
+     return;
+   }
+ 
++  if (!PrepareNativePortsForHosting(this))
++    return;
+   PrepareNetplayConfig();
+   // A manually hosted room is published too -- otherwise nobody can find it
+   // except by the host reading their code aloud, which is exactly the workflow
+@@ -2171,6 +2272,8 @@ void XDLauncherDialog::FinishSearch(bool listed, const std::optional<NetPlaySess
+                     "leave the NetPlay window open and wait for an opponent."));
+   PreparePublishConfig(true);
+   Config::Save();
++  if (!PrepareNativePortsForHosting(this))
++    return;
+   emit HostXD(*game);
+ }
+ 
+diff --git a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.h b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.h
+index 1d3353be4..2ec95b04e 100644
+--- a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.h
++++ b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.h
+@@ -94,6 +94,7 @@ private:
+ 
+   void OnFixGamePath();
+   void OnFixEmeraldRom();
++  void OnAddNativeRom(bool ruby_sapphire);
+   void OnFixBios();
+   void OnFixGbaInput();
+   void OnFixTeamSaves();
+@@ -128,6 +129,8 @@ private:
+ 
+   ChecklistRow m_game_row;
+   ChecklistRow m_rom_row;
++  ChecklistRow m_frlg_rom_row;
++  ChecklistRow m_rs_rom_row;
+   ChecklistRow m_bios_row;
+   ChecklistRow m_team_saves_row;
+   ChecklistRow m_vs_save_row;
+diff --git a/Source/Core/DolphinQt/XDNetplay/XDNetplayConfig.cpp b/Source/Core/DolphinQt/XDNetplay/XDNetplayConfig.cpp
+index f48b1c014..884c9ef93 100644
+--- a/Source/Core/DolphinQt/XDNetplay/XDNetplayConfig.cpp
++++ b/Source/Core/DolphinQt/XDNetplay/XDNetplayConfig.cpp
+@@ -38,6 +38,7 @@
+ #endif
+ #include "UICommon/XDNetplay/DisposableSave.h"
+ #include "UICommon/XDNetplay/FormatRules.h"
++#include "UICommon/XDNetplay/SaveImport.h"
+ 
+ namespace XDNetplay
+ {
+@@ -107,12 +108,9 @@ bool EnsureGbaConfig(bool multi_solo)
+   // and 3 for a 1v1 link, all four for a multi battle. Re-assert them only
+   // while the stored path still exists on disk, so a deleted dump shows up as
+   // a red checklist row instead of being silently re-broken at boot.
+-  const std::string rom_path = Config::Get(Config::MAIN_GBA_ROM_PATHS[1]);
+-  if (!rom_path.empty() && File::Exists(rom_path))
+-  {
+-    for (int i = 0; i < 4; ++i)
+-      Config::SetBaseOrCurrent(Config::MAIN_GBA_ROM_PATHS[i], rom_path);
+-  }
++  // A port holding a FireRed/LeafGreen or Ruby/Sapphire save runs that game's ROM when the player
++  // added one; every other port (and every port of a multi battle) runs Emerald.
++  SaveImport::ApplyPortRoms(multi_solo);
+ 
+   // Port 1 pad, ports 2/3 integrated GBAs -- the fixed XD link layout. With
+   // Multi enabled a Wii U adapter on port 1 stays (a multi battle reads the
+@@ -476,8 +474,14 @@ bool ApplyDefaultGbaInput()
+ bool SeedTeamSaves()
+ {
+ #ifdef HAS_LIBMGBA
+-  const std::string rom2 = Config::Get(Config::MAIN_GBA_ROM_PATHS[1]);
+-  const std::string rom3 = Config::Get(Config::MAIN_GBA_ROM_PATHS[2]);
++  // The default team saves belong to the Emerald ROM, whichever game a port runs right now.
++  std::string rom2 = SaveImport::LibraryRom(Gen3Game::Emerald);
++  std::string rom3 = rom2;
++  if (rom2.empty())
++  {
++    rom2 = Config::Get(Config::MAIN_GBA_ROM_PATHS[1]);
++    rom3 = Config::Get(Config::MAIN_GBA_ROM_PATHS[2]);
++  }
+   if (rom2.empty() || rom3.empty())
+     return false;
+ 
+diff --git a/Source/Core/UICommon/XDNetplay/MultiStart.cpp b/Source/Core/UICommon/XDNetplay/MultiStart.cpp
+index 44d761103..422ade39a 100644
+--- a/Source/Core/UICommon/XDNetplay/MultiStart.cpp
++++ b/Source/Core/UICommon/XDNetplay/MultiStart.cpp
+@@ -80,7 +80,9 @@ MultiStartOutcome PrepareMultiStart(NetPlay::NetPlayServer& server,
+ 
+   // 9: one Emerald dump for all four GBAs.
+ #ifdef HAS_LIBMGBA
+-  std::string rom = Config::Get(Config::MAIN_GBA_ROM_PATHS[1]);
++  std::string rom = SaveImport::LibraryRom(Gen3Game::Emerald);
++  if (rom.empty())
++    rom = Config::Get(Config::MAIN_GBA_ROM_PATHS[1]);
+   if (rom.empty() || !File::Exists(rom))
+     rom = Config::Get(Config::MAIN_GBA_ROM_PATHS[2]);
+   if (rom.empty() || !File::Exists(rom))
+@@ -212,7 +214,9 @@ MultiStartOutcome PrepareWatchStart(NetPlay::NetPlayServer& server,
+ 
+   // One Emerald dump for both GBAs.
+ #ifdef HAS_LIBMGBA
+-  std::string rom = Config::Get(Config::MAIN_GBA_ROM_PATHS[1]);
++  std::string rom = SaveImport::LibraryRom(Gen3Game::Emerald);
++  if (rom.empty())
++    rom = Config::Get(Config::MAIN_GBA_ROM_PATHS[1]);
+   if (rom.empty() || !File::Exists(rom))
+     rom = Config::Get(Config::MAIN_GBA_ROM_PATHS[2]);
+   if (rom.empty() || !File::Exists(rom))
+diff --git a/Source/Core/UICommon/XDNetplay/SaveImport.cpp b/Source/Core/UICommon/XDNetplay/SaveImport.cpp
+index c3a1905c8..37b3997f2 100644
+--- a/Source/Core/UICommon/XDNetplay/SaveImport.cpp
++++ b/Source/Core/UICommon/XDNetplay/SaveImport.cpp
+@@ -80,6 +80,16 @@ const Config::Info<int>& ImportedGameKey(int device)
+   return device == 1 ? Config::MAIN_XD_IMPORTED_GAME_2 : Config::MAIN_XD_IMPORTED_GAME_3;
+ }
+ 
++const Config::Info<int>& NativeGameKey(int device)
++{
++  return device == 1 ? Config::MAIN_XD_NATIVE_GAME_2 : Config::MAIN_XD_NATIVE_GAME_3;
++}
++
++int NativeCode(Gen3Game game)
++{
++  return game == Gen3Game::FireRedLeafGreen ? 1 : game == Gen3Game::RubySapphire ? 2 : 0;
++}
++
+ std::string BaseName(const std::string& path)
+ {
+   return path.substr(path.find_last_of("/\\") + 1);
+@@ -332,17 +342,38 @@ bool ImportUserSave(const std::string& source_path, int device, std::string* sta
+   if (!validation)
+     return false;
+ 
+-  const auto rom_game = DetectRomGame(rom, error);
++  auto rom_game = DetectRomGame(rom, error);
+   if (!rom_game)
+     return false;
+-  if (validation->game != *rom_game && *rom_game == Gen3Game::Emerald &&
++
++  // A save of another Gen 3 game runs natively when the player has that game's ROM: the port
++  // switches ROM, the save is used as it is, and nothing about the trainer needs pinning. The
++  // switch is only recorded after the write succeeds.
++  std::string target_rom = rom;
++  std::string save_target = save_path;
++  bool switch_rom = false;
++  if (validation->game != *rom_game)
++  {
++    const std::string library = LibraryRom(validation->game);
++    if (!library.empty())
++    {
++      target_rom = library;
++      save_target = HW::GBA::Core::GetSavePath(library, device);
++      switch_rom = true;
++      if (RefuseIfSaveIsLive(device, save_target, error))
++        return false;
++    }
++  }
++
++  if (!switch_rom && validation->game != *rom_game &&
++      (*rom_game == Gen3Game::Emerald || !LibraryRom(Gen3Game::Emerald).empty()) &&
+       (validation->game == Gen3Game::FireRedLeafGreen ||
+        validation->game == Gen3Game::RubySapphire))
+   {
+-    // A FireRed/LeafGreen or Ruby/Sapphire save cannot boot in the Emerald ROM this port runs,
+-    // but its party and trainer are all a link battle needs. Rebuild an Emerald save from them
+-    // (the same construction a cartridge read and a netplay host use); the trainer keeps the
+-    // cartridge's look (Leaf, Red, May, Brendan) in battle.
++    // No ROM for that game: a FireRed/LeafGreen or Ruby/Sapphire save cannot boot in the Emerald
++    // ROM this port runs, but its party and trainer are all a link battle needs. Rebuild an
++    // Emerald save from them (the same construction a cartridge read and a netplay host use);
++    // the trainer keeps the cartridge's look (Leaf, Red, May, Brendan) in battle.
+     std::string rebuilt_status;
+     if (!ImportTeamFromPartialSave(
+             source_path,
+@@ -356,12 +387,13 @@ bool ImportUserSave(const std::string& source_path, int device, std::string* sta
+     {
+       *status = fmt::format(
+           "That save is from {}, so its party and trainer were copied into an Emerald save "
+-          "(your boxes, items and story are not used).\n\n{}",
+-          GameDisplayName(validation->game), rebuilt_status);
++          "(your boxes, items and story are not used).\n\nAdd a {} ROM in the launcher to play "
++          "this save as it is.\n\n{}",
++          GameDisplayName(validation->game), GameDisplayName(validation->game), rebuilt_status);
+     }
+     return true;
+   }
+-  if (validation->game != *rom_game)
++  if (!switch_rom && validation->game != *rom_game)
+   {
+     std::string message = fmt::format(
+         "That save is from {}, but this GBA port runs {}. The game itself would refuse a "
+@@ -374,15 +406,22 @@ bool ImportUserSave(const std::string& source_path, int device, std::string* sta
+ 
+   // First backup wins, forever: a re-import must never overwrite the record
+   // of what the socket held before the FIRST import.
+-  const std::string backup_path = save_path + PREIMPORT_SUFFIX;
++  const std::string backup_path = save_target + PREIMPORT_SUFFIX;
+   const bool backup_existed = File::Exists(backup_path);
+-  const bool had_previous = File::Exists(save_path);
+-  if (had_previous && !backup_existed && !File::CopyRegularFile(save_path, backup_path))
++  const bool had_previous = File::Exists(save_target);
++  if (had_previous && !backup_existed && !File::CopyRegularFile(save_target, backup_path))
+     return fail("could not back up the current save to " + backup_path + " — nothing was changed");
+ 
+-  if (!WriteFileVerified(save_path, bytes, error))
++  if (!WriteFileVerified(save_target, bytes, error))
+     return false;
+ 
++  // The port now runs the ROM of the save's own game (back to Emerald for an Emerald save).
++  if (switch_rom)
++    Config::SetBase(Config::MAIN_GBA_ROM_PATHS[device], target_rom);
++  Config::SetBase(NativeGameKey(device),
++                  switch_rom || validation->game == Gen3Game::Emerald ? NativeCode(validation->game) :
++                                                                       0);
++
+   // Display-only record of what was imported; HasImportBackup stays the
+   // authoritative signal.
+   Config::SetBase(ImportedSaveKey(device), BaseName(source_path));
+@@ -399,6 +438,13 @@ bool ImportUserSave(const std::string& source_path, int device, std::string* sta
+     const std::string trainer = parsed ? parsed->GetTrainerName() : "?";
+     *status = fmt::format("Imported {} ({}, trainer {}).", BaseName(source_path),
+                           GameDisplayName(validation->game), trainer);
++    if (switch_rom && validation->game != Gen3Game::Emerald)
++    {
++      *status += fmt::format(
++          " This port now runs your {} ROM, so the save plays exactly as it is: the game itself "
++          "shows the right trainer.",
++          GameDisplayName(validation->game));
++    }
+     if (validation->padded_from_64k)
+       *status += " The 64 KiB file was padded to the full 128 KiB flash size.";
+     if (backup_existed)
+@@ -432,7 +478,12 @@ bool RestoreDefaultSave(int device, std::string* error)
+   if (device != 1 && device != 2)
+     return fail(fmt::format("no such GBA socket ({})", device));
+ 
+-  const std::string save_path = SavePathForDevice(device);
++  // A port running another game's ROM returns to Emerald; that game's own save file stays where it
++  // is for the next time.
++  const std::string emerald_rom = LibraryRom(Gen3Game::Emerald);
++  const bool was_native = Config::Get(NativeGameKey(device)) != 0 && !emerald_rom.empty();
++  const std::string save_path =
++      was_native ? HW::GBA::Core::GetSavePath(emerald_rom, device) : SavePathForDevice(device);
+   if (save_path.empty())
+     return fail("no GBA ROM configured for that port — run the launcher checklist first");
+ 
+@@ -456,6 +507,9 @@ bool RestoreDefaultSave(int device, std::string* error)
+   if (!WriteFileVerified(save_path, bytes, error))
+     return false;
+ 
++  if (was_native)
++    Config::SetBase(Config::MAIN_GBA_ROM_PATHS[device], emerald_rom);
++  Config::SetBase(NativeGameKey(device), 0);
+   Config::SetBase(ImportedSaveKey(device), std::string{});
+   Config::SetBase(ImportedGameKey(device), 0);
+   Config::Save();
+@@ -510,6 +564,12 @@ bool ImportTeamFromPartialSave(const std::string& partial_path, const std::strin
+     if (model != 0)
+     {
+       *status += fmt::format("\n\nPlays as {} trainer.", GameDisplayName(game));
++      if (!LibraryRom(game).empty())
++      {
++        *status +=
++            " To play this cartridge's whole save natively instead, tick \"Read full save\" "
++            "and read it again.";
++      }
+     }
+   }
+   return true;
+@@ -634,6 +694,153 @@ int CartridgeModelForDevice(int device)
+ #endif
+ }
+ 
++std::string LibraryRom(Gen3Game game)
++{
++#ifndef HAS_LIBMGBA
++  (void)game;
++  return {};
++#else
++  const auto usable = [game](const std::string& path) {
++    if (path.empty() || !File::Exists(path))
++      return false;
++    const auto detected = DetectRomGame(path);
++    return detected && *detected == game;
++  };
++  const Config::Info<std::string>& key = game == Gen3Game::FireRedLeafGreen ? Config::MAIN_XD_ROM_FRLG :
++                                         game == Gen3Game::RubySapphire     ? Config::MAIN_XD_ROM_RS :
++                                                                              Config::MAIN_XD_ROM_EMERALD;
++  if (const std::string stored = Config::Get(key); usable(stored))
++    return stored;
++  if (game != Gen3Game::Emerald)
++    return {};
++  // Older setups only know the Emerald dump through the ports it was assigned to.
++  for (int i = 0; i < 4; ++i)
++  {
++    const std::string path = Config::Get(Config::MAIN_GBA_ROM_PATHS[i]);
++    if (usable(path))
++      return path;
++  }
++  return {};
++#endif
++}
++
++bool AddLibraryRom(const std::string& source_path, Gen3Game* game_out, std::string* error)
++{
++  const auto fail = [error](std::string message) {
++    if (error)
++      *error = std::move(message);
++    return false;
++  };
++#ifndef HAS_LIBMGBA
++  (void)source_path;
++  (void)game_out;
++  return fail("this build has no GBA support");
++#else
++  std::string detect_error;
++  const auto game = DetectRomGame(source_path, &detect_error);
++  if (!game)
++    return fail(detect_error);
++  std::array<char, 4> code{};
++  {
++    File::IOFile file(source_path, "rb");
++    if (!file || !file.Seek(0xAC, File::SeekOrigin::Begin) ||
++        !file.ReadBytes(code.data(), code.size()))
++    {
++      return fail("could not read the ROM header of " + source_path);
++    }
++  }
++  const std::string family(code.data(), 3);
++  const char* name = family == "BPR"   ? "FIRERED.gba" :
++                     family == "BPG"   ? "LEAFGREEN.gba" :
++                     family == "AXV"   ? "RUBY.gba" :
++                     family == "AXP"   ? "SAPPHIRE.gba" :
++                                         "EMERALD.gba";
++  const std::string destination = File::GetUserPath(D_GBAUSER_IDX) + name;
++  if (source_path != destination)
++  {
++    File::CreateFullPath(destination);
++    if (!File::CopyRegularFile(source_path, destination))
++      return fail("could not copy the ROM into Dolphin's GBA folder");
++  }
++  const Config::Info<std::string>& key = *game == Gen3Game::FireRedLeafGreen ? Config::MAIN_XD_ROM_FRLG :
++                                         *game == Gen3Game::RubySapphire     ? Config::MAIN_XD_ROM_RS :
++                                                                               Config::MAIN_XD_ROM_EMERALD;
++  Config::SetBase(key, destination);
++  Config::Save();
++  if (game_out)
++    *game_out = *game;
++  return true;
++#endif
++}
++
++Gen3Game NativeGameForDevice(int device)
++{
++#ifndef HAS_LIBMGBA
++  (void)device;
++  return Gen3Game::Emerald;
++#else
++  if (device != 1 && device != 2)
++    return Gen3Game::Emerald;
++  const int code = Config::Get(NativeGameKey(device));
++  const Gen3Game game = code == 1 ? Gen3Game::FireRedLeafGreen :
++                        code == 2 ? Gen3Game::RubySapphire :
++                                    Gen3Game::Emerald;
++  // Only while the ROM is still there; otherwise the port falls back to Emerald.
++  if (game != Gen3Game::Emerald && LibraryRom(game).empty())
++    return Gen3Game::Emerald;
++  return game;
++#endif
++}
++
++void ApplyPortRoms(bool all_emerald)
++{
++#ifdef HAS_LIBMGBA
++  const std::string emerald = LibraryRom(Gen3Game::Emerald);
++  if (emerald.empty())
++    return;
++  for (int i = 0; i < 4; ++i)
++  {
++    std::string rom = emerald;
++    if (!all_emerald && (i == 1 || i == 2))
++    {
++      if (const Gen3Game game = NativeGameForDevice(i); game != Gen3Game::Emerald)
++        rom = LibraryRom(game);
++    }
++    Config::SetBaseOrCurrent(Config::MAIN_GBA_ROM_PATHS[i], rom);
++  }
++#else
++  (void)all_emerald;
++#endif
++}
++
++bool PrepareNativePortsForRoom(std::string* error)
++{
++#ifndef HAS_LIBMGBA
++  (void)error;
++  return true;
++#else
++  for (const int device : {1, 2})
++  {
++    if (NativeGameForDevice(device) == Gen3Game::Emerald)
++      continue;
++    // Read the native save through the port's own ROM, then rebuild it as Emerald.
++    const std::string native_path = SavePathForDevice(device);
++    if (native_path.empty() || !File::Exists(native_path))
++      continue;
++    std::string rebuilt_status;
++    if (!ImportTeamFromPartialSave(native_path,
++                                   File::GetUserPath(D_USER_IDX) + "GBLink Dumps/team-port" +
++                                       std::to_string(device) + ".sav",
++                                   device, &rebuilt_status, error))
++    {
++      return false;
++    }
++  }
++  ApplyPortRoms(false);
++  return true;
++#endif
++}
++
+ bool HasImportBackup(int device)
+ {
+ #ifndef HAS_LIBMGBA
+diff --git a/Source/Core/UICommon/XDNetplay/SaveImport.h b/Source/Core/UICommon/XDNetplay/SaveImport.h
+index bbf10de8a..68765823b 100644
+--- a/Source/Core/UICommon/XDNetplay/SaveImport.h
++++ b/Source/Core/UICommon/XDNetplay/SaveImport.h
+@@ -100,6 +100,36 @@ bool RestoreDefaultSave(int device, std::string* error);
+ // player appear as Leaf instead of May.
+ int CartridgeModelForDevice(int device);
+ 
++// ---------------------------------------------------------------------------
++// Native ROMs
++// ---------------------------------------------------------------------------
++// The emulated GBA ports normally run Emerald, and a FireRed/LeafGreen or Ruby/Sapphire save is
++// rebuilt as an Emerald save with the cartridge's trainer pinned. When the player has a ROM for the
++// save's own game, the port can run that ROM instead and the save is used exactly as it is: the
++// trainer, bust and party then come from the game itself and nothing is pinned.
++
++// The ROM the launcher holds for |game| (Emerald, FireRed/LeafGreen, Ruby/Sapphire), or empty when
++// there is none on disk. Emerald falls back to whichever configured GBA port already holds an
++// Emerald ROM.
++std::string LibraryRom(Gen3Game game);
++
++// Copy a FireRed/LeafGreen or Ruby/Sapphire ROM into Dolphin's GBA folder and remember it. Emerald
++// has its own picker. On failure *error says why (not a Gen 3 Pokemon ROM, copy failed).
++bool AddLibraryRom(const std::string& source_path, Gen3Game* game_out, std::string* error);
++
++// The game GBA socket |device| (1 = port 2, 2 = port 3) runs natively; Emerald unless a save of
++// another game was imported and its ROM is available.
++Gen3Game NativeGameForDevice(int device);
++
++// Point ports 0-3 at the right ROM: Emerald everywhere, except sockets 1 and 2 when they hold a
++// native save. |all_emerald| (a Multi battle) forces Emerald on every port.
++void ApplyPortRoms(bool all_emerald);
++
++// A hosted room runs both GBAs on Emerald. Rebuild every native FireRed/LeafGreen or
++// Ruby/Sapphire import as an Emerald save with the cartridge's trainer (the older behaviour), so
++// the room can be hosted. Returns false with *error when a rebuild fails.
++bool PrepareNativePortsForRoom(std::string* error);
++
+ // True when <save>.preimport exists for the socket. This -- not the config
+ // key, which is display-only -- is the authoritative "an import happened"
+ // signal, so a hand-deleted file cannot desync the UI.
+-- 
+2.43.0
+
