@@ -1,0 +1,32 @@
+From dbbf1f283692266859777e8ceaf0391cfe571f84 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 18 Nov 2026 14:36:49 -0600
+Subject: [PATCH] Solo: the opponent wears the trainer of the cartridge its
+ save was read from
+
+A solo start with a real GBA against an imported FireRed/LeafGreen or Ruby/Sapphire save
+pinned only the first port's trainer, so the opponent stayed an Emerald trainer. With no guest
+look submitted, port 2 now defaults to its cartridge's trainer.
+---
+ Source/Core/UICommon/XDNetplay/BattleCustomizer.cpp | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/Source/Core/UICommon/XDNetplay/BattleCustomizer.cpp b/Source/Core/UICommon/XDNetplay/BattleCustomizer.cpp
+index 6bbd8ddc9..05192a16d 100644
+--- a/Source/Core/UICommon/XDNetplay/BattleCustomizer.cpp
++++ b/Source/Core/UICommon/XDNetplay/BattleCustomizer.cpp
+@@ -1273,6 +1273,11 @@ Selection ConfigSelection()
+   if (sel.host_model <= 0)
+     sel.host_model = SaveImport::CartridgeModelForDevice(1);
+   sel.guest_model_fallback = Config::Get(Config::MAIN_XD_STYLE_GUEST_MODEL);
++  // A solo start has no guest to submit a look, so the opponent on the second GBA port wears the
++  // trainer of the cartridge its save was read from (Red for a male LeafGreen save). In a room the
++  // guest's own submission decides, so this stays out of it.
++  if (sel.guest_model_fallback <= 0 && !IsNetplaySessionActive())
++    sel.guest_model_fallback = SaveImport::CartridgeModelForDevice(2);
+   sel.music = Config::Get(Config::MAIN_XD_STYLE_MUSIC);
+   sel.venue = Config::Get(Config::MAIN_XD_STYLE_VENUE);
+   return sel;
+-- 
+2.43.0
+
