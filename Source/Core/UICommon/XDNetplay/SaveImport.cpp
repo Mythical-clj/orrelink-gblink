@@ -15,6 +15,7 @@
 #include <fmt/format.h>
 
 #include "Common/Config/Config.h"
+#include "Common/CommonPaths.h"
 #include "Common/FileUtil.h"
 #include "Common/IOFile.h"
 
@@ -334,6 +335,32 @@ bool ImportUserSave(const std::string& source_path, int device, std::string* sta
   const auto rom_game = DetectRomGame(rom, error);
   if (!rom_game)
     return false;
+  if (validation->game != *rom_game && *rom_game == Gen3Game::Emerald &&
+      (validation->game == Gen3Game::FireRedLeafGreen ||
+       validation->game == Gen3Game::RubySapphire))
+  {
+    // A FireRed/LeafGreen or Ruby/Sapphire save cannot boot in the Emerald ROM this port runs,
+    // but its party and trainer are all a link battle needs. Rebuild an Emerald save from them
+    // (the same construction a cartridge read and a netplay host use); the trainer keeps the
+    // cartridge's look (Leaf, Red, May, Brendan) in battle.
+    std::string rebuilt_status;
+    if (!ImportTeamFromPartialSave(
+            source_path,
+            File::GetUserPath(D_USER_IDX) + "GBLink Dumps/team-port" + std::to_string(device) +
+                ".sav",
+            device, &rebuilt_status, error))
+    {
+      return false;
+    }
+    if (status)
+    {
+      *status = fmt::format(
+          "That save is from {}, so its party and trainer were copied into an Emerald save "
+          "(your boxes, items and story are not used).\n\n{}",
+          GameDisplayName(validation->game), rebuilt_status);
+    }
+    return true;
+  }
   if (validation->game != *rom_game)
   {
     std::string message = fmt::format(

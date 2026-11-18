@@ -246,8 +246,8 @@ private:
   std::vector<std::unique_ptr<Link>> m_owned;      // guarded by m_mutex
   std::array<std::atomic<Link*>, kMaxAdapters> m_links{};  // fixed slots, read without locks
   std::atomic<bool> m_menu_nav{false};
-  std::atomic<bool> m_mirror_on{true};
-  std::atomic<bool> m_controller_wanted{true};
+  std::atomic<bool> m_mirror_on{false};
+  std::atomic<bool> m_controller_wanted{false};
   std::atomic<bool> m_joybus{false};
 };
 }  // namespace GBLink

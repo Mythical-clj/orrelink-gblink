@@ -216,12 +216,11 @@ int CSIDevice_GBALink::RunBuffer(u8* buffer, int request_length)
     {
       // Decided once, at the first command, the same on every machine of a room.
       const bool netplay = NetPlay::IsNetPlayRunning();
-      if (netplay ? m_owner != 0 : Config::Get(Config::MAIN_GBLINK_JOYBUS_LAG_TEST))
+      if (netplay && m_owner != 0)
       {
         m_model = std::make_unique<JoyBusLagModel>(
             u64{m_system.GetSystemTimers().GetTicksPerSecond()} * kLagMs / 1000);
-        JoyLog(fmt::format("joybus port {}: lag model on, {} ms{}", m_device_number + 1, kLagMs,
-                           netplay ? "" : " (lag test)"));
+        JoyLog(fmt::format("joybus port {}: lag model on, {} ms", m_device_number + 1, kLagMs));
       }
     }
     if (m_model)
@@ -284,7 +283,7 @@ int CSIDevice_GBALink::RunBuffer(u8* buffer, int request_length)
         NetPlay::SendJoyReply(m_device_number, m_seq, got, rx);
     }
 
-    // What the game hears. Alone, the GBA's answer. In a netplay room (or with the lag test on),
+    // What the game hears. Alone, the GBA's answer. In a netplay room,
     // what the lag model makes of the real answers: the same on every machine, and without a
     // network trip for each command. See JoyBusLagModel.h.
     std::string note;

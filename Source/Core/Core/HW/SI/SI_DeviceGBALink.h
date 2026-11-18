@@ -52,7 +52,7 @@ private:
   int m_link_device = 0;  // which adapter (the local pad number, as the GBA's keys use)
   bool m_started = false;
 
-  // Netplay (and the lag test): what the game hears comes from the lag model. Model index i is
+  // Netplay: what the game hears comes from the lag model. Model index i is
   // command number i + 1 (m_seq) on every machine.
   static constexpr u64 kLagMs = 100;
   std::unique_ptr<JoyBusLagModel> m_model;

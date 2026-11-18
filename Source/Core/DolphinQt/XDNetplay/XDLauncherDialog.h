@@ -148,7 +148,8 @@ private:
   QCheckBox* m_gblink_full_read_check = nullptr;
   QCheckBox* m_gblink_menu_check = nullptr;
   QCheckBox* m_gblink_joybus_check = nullptr;
-  QCheckBox* m_gblink_lag_test_check = nullptr;
+  QToolButton* m_gblink_toggle = nullptr;
+  QWidget* m_gblink_section = nullptr;
   QToolButton* m_mgba_toggle = nullptr;
   QWidget* m_mgba_section = nullptr;
   QCheckBox* m_gblink_mirror_check = nullptr;

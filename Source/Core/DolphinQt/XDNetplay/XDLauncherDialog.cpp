@@ -425,8 +425,17 @@ void XDLauncherDialog::CreateMainLayout()
   // DisposableSave swaps in for the room's duration.
   // GB-Link: a real GBA plugged into this PC. Plays as the controller (no setup beyond
   // powering the GBA on with START+SELECT held) and can hand over its cartridge save.
-  auto* gblink_box = new QGroupBox(tr("GB-Link"));
+  // The GB-Link section folds away like the mGBA one below it.
+  m_gblink_toggle = new QToolButton;
+  m_gblink_toggle->setText(tr("GB-Link"));
+  m_gblink_toggle->setCheckable(true);
+  m_gblink_toggle->setAutoRaise(true);
+  m_gblink_toggle->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+  m_gblink_toggle->setArrowType(Qt::RightArrow);
+  auto* gblink_box = new QWidget;
+  m_gblink_section = gblink_box;
   auto* gblink_layout = new QGridLayout;
+  gblink_layout->setContentsMargins(0, 0, 0, 0);
   // Everything that belongs to the integrated (mGBA) GBAs lives in one section that folds away:
   // with "Real GBA" on, none of it is needed.
   m_mgba_toggle = new QToolButton;
@@ -448,7 +457,7 @@ void XDLauncherDialog::CreateMainLayout()
   m_gblink_menu_check->setChecked(false);
     m_gblink_menu_check->setToolTip(tr("Port 1 menus"));
   m_gblink_pad_check = new QCheckBox(tr("GBA as controller"));
-  m_gblink_pad_check->setChecked(true);
+  m_gblink_pad_check->setChecked(false);
     m_gblink_pad_check->setToolTip(tr("Power on holding START+SELECT"));
   gblink_layout->addWidget(m_gblink_status, 0, 0);
   // Several adapters: each says which GBA port it plays, and one is picked for cartridge reads.
@@ -499,7 +508,7 @@ void XDLauncherDialog::CreateMainLayout()
   agent_layout->addWidget(m_gblink_pad_check, 0, 0);
   agent_layout->addWidget(m_gblink_menu_check, 1, 0);
   m_gblink_mirror_check = new QCheckBox(tr("Mirror GBA screen"));
-  m_gblink_mirror_check->setChecked(true);
+  m_gblink_mirror_check->setChecked(false);
     m_gblink_mirror_check->setToolTip(tr("Show game on GBA"));
   agent_layout->addWidget(m_gblink_mirror_check, 2, 0);
   agent_layout->addWidget(m_gblink_full_read_check, 3, 0);
@@ -510,12 +519,9 @@ void XDLauncherDialog::CreateMainLayout()
   m_gblink_joybus_check->setChecked(Config::Get(Config::MAIN_GBLINK_JOYBUS));
   m_gblink_joybus_check->setToolTip(tr("Cartridge over JOY Bus"));
   gblink_layout->addWidget(m_gblink_joybus_check, 1, 0);
-  m_gblink_lag_test_check = new QCheckBox(tr("Netplay lag test"));
-  m_gblink_lag_test_check->setChecked(Config::Get(Config::MAIN_GBLINK_JOYBUS_LAG_TEST));
-  m_gblink_lag_test_check->setToolTip(tr("Solo play with netplay's delay"));
-  gblink_layout->addWidget(m_gblink_lag_test_check, 2, 0);
   gblink_layout->setColumnStretch(0, 1);
   gblink_box->setLayout(gblink_layout);
+  layout->addWidget(m_gblink_toggle);
   layout->addWidget(gblink_box);
   layout->addWidget(m_mgba_toggle);
   layout->addWidget(m_mgba_section);
@@ -1041,20 +1047,27 @@ void XDLauncherDialog::ConnectWidgets()
     GBLink::Manager::Get().SetJoybus(on);
 #endif
   });
-  connect(m_gblink_lag_test_check, &QCheckBox::toggled, this, [](bool on) {
-    Config::SetBaseOrCurrent(Config::MAIN_GBLINK_JOYBUS_LAG_TEST, on);
+  connect(m_gblink_toggle, &QToolButton::toggled, this, [this](bool open) {
+    m_gblink_section->setVisible(open);
+    m_gblink_toggle->setArrowType(open ? Qt::DownArrow : Qt::RightArrow);
+    QSettings().setValue(QStringLiteral("xdnetplay/gblink_section_open"), open);
   });
+  {
+    // GB-Link starts open (it holds "Real GBA", the way to play); mGBA emulation starts closed.
+    const bool open =
+        QSettings().value(QStringLiteral("xdnetplay/gblink_section_open"), true).toBool();
+    m_gblink_section->setVisible(open);
+    m_gblink_toggle->setChecked(open);
+  }
   connect(m_mgba_toggle, &QToolButton::toggled, this, [this](bool open) {
     m_mgba_section->setVisible(open);
     m_mgba_toggle->setArrowType(open ? Qt::DownArrow : Qt::RightArrow);
     QSettings().setValue(QStringLiteral("xdnetplay/mgba_section_open"), open);
   });
   {
-    // Open by default only where it is the way to play: "Real GBA" off.
-    const bool open = QSettings()
-                          .value(QStringLiteral("xdnetplay/mgba_section_open"),
-                                 !Config::Get(Config::MAIN_GBLINK_JOYBUS))
-                          .toBool();
+    // Closed by default: everything in it is off until the player turns it on.
+    const bool open =
+        QSettings().value(QStringLiteral("xdnetplay/mgba_section_open"), false).toBool();
     m_mgba_section->setVisible(open);
     m_mgba_toggle->setChecked(open);
   }
