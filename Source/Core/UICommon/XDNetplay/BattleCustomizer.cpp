@@ -1273,6 +1273,11 @@ Selection ConfigSelection()
   if (sel.host_model <= 0)
     sel.host_model = SaveImport::CartridgeModelForDevice(1);
   sel.guest_model_fallback = Config::Get(Config::MAIN_XD_STYLE_GUEST_MODEL);
+  // A solo start has no guest to submit a look, so the opponent on the second GBA port wears the
+  // trainer of the cartridge its save was read from (Red for a male LeafGreen save). In a room the
+  // guest's own submission decides, so this stays out of it.
+  if (sel.guest_model_fallback <= 0 && !IsNetplaySessionActive())
+    sel.guest_model_fallback = SaveImport::CartridgeModelForDevice(2);
   sel.music = Config::Get(Config::MAIN_XD_STYLE_MUSIC);
   sel.venue = Config::Get(Config::MAIN_XD_STYLE_VENUE);
   return sel;
