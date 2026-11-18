@@ -1,4 +1,4 @@
-From 8c4576572fbce3aa45b10183734387030f8ce9b6 Mon Sep 17 00:00:00 2001
+From 67adf23a57710cf4fdf94284a0fdda7bfc5cdfdf Mon Sep 17 00:00:00 2001
 From: t <t@t>
 Date: Fri, 13 Nov 2026 13:17:25 -0600
 Subject: [PATCH] GBLink JOY Bus: lag model for netplay
@@ -608,7 +608,7 @@ index b39e0adad..ac0ecb1b2 100644
      <ClInclude Include="Core\HW\SI\SI_DeviceGBAEmu.h" />
      <ClInclude Include="Core\HW\SI\SI_DeviceGCAdapter.h" />
 diff --git a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
-index c43d64852..0c7028a88 100644
+index 63225f784..99db55ad6 100644
 --- a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
 +++ b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
 @@ -510,6 +510,10 @@ void XDLauncherDialog::CreateMainLayout()
@@ -622,7 +622,7 @@ index c43d64852..0c7028a88 100644
    gblink_layout->setColumnStretch(0, 1);
    gblink_box->setLayout(gblink_layout);
    layout->addWidget(gblink_box);
-@@ -1026,6 +1030,9 @@ void XDLauncherDialog::ConnectWidgets()
+@@ -1037,6 +1041,9 @@ void XDLauncherDialog::ConnectWidgets()
      GBLink::Manager::Get().SetJoybus(on);
  #endif
    });

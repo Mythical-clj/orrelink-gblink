@@ -1,8 +1,8 @@
-From 77bb3f2c014f856b2dcd97aeec122c7e05a45aa6 Mon Sep 17 00:00:00 2001
+From 1d99d707a749e4112636a08a26bebead39a419dc Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 5 Nov 2026 10:49:24 -0600
-Subject: [PATCH 192/193] GB-Link: show a static XD standby picture on the real
- GBA while it is a controller
+Subject: [PATCH] GB-Link: show a static XD standby picture on the real GBA
+ while it is a controller
 
 Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01764cASb9aVVk2m6JupRMj5

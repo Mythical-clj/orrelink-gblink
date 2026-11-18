@@ -1,4 +1,4 @@
-From 71a70d77c9b3d63b0d0b43f0a570a9b8c2aed495 Mon Sep 17 00:00:00 2001
+From 59e4175d4e1f371b18921f4d4aeb577e45388a67 Mon Sep 17 00:00:00 2001
 From: t <t@t>
 Date: Tue, 10 Nov 2026 11:26:02 -0600
 Subject: [PATCH] GB-Link: short UI text; macOS/Linux USB handling (skip reset
@@ -14,7 +14,7 @@ Claude-Session: https://claude.ai/code/session_01764cASb9aVVk2m6JupRMj5
  4 files changed, 66 insertions(+), 89 deletions(-)
 
 diff --git a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
-index 1c30f5efd..e2dedc7ac 100644
+index 39e192f03..2ef5348b0 100644
 --- a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
 +++ b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
 @@ -424,27 +424,18 @@ void XDLauncherDialog::CreateMainLayout()
@@ -135,7 +135,7 @@ index 1c30f5efd..e2dedc7ac 100644
      saves_layout->addWidget(new QLabel(label), save_row, 0);
      saves_layout->addWidget(target->state, save_row, 1);
      saves_layout->addWidget(target->import_button, save_row, 2);
-@@ -1376,12 +1351,10 @@ void XDLauncherDialog::RefreshGbLinkStatus()
+@@ -1387,12 +1362,10 @@ void XDLauncherDialog::RefreshGbLinkStatus()
      // therefore no longer shown.
      m_gblink_read_row->setVisible(false);
      m_save_row_port2.gblink_button->setToolTip(
@@ -150,7 +150,7 @@ index 1c30f5efd..e2dedc7ac 100644
                    QString());
      if (several && m_gblink_read_combo->count() != static_cast<int>(adapters.size()))
      {
-@@ -1408,7 +1381,7 @@ void XDLauncherDialog::RefreshGbLinkStatus()
+@@ -1419,7 +1392,7 @@ void XDLauncherDialog::RefreshGbLinkStatus()
    m_save_row_port2.gblink_button->setEnabled(!busy);
    m_save_row_port3.gblink_button->setEnabled(!busy);
  #else
@@ -159,7 +159,7 @@ index 1c30f5efd..e2dedc7ac 100644
    m_gblink_pad_check->setEnabled(false);
    m_gblink_menu_check->setEnabled(false);
    m_gblink_mirror_check->setEnabled(false);
-@@ -1499,8 +1472,7 @@ void XDLauncherDialog::OnImportFromGbLink(int device)
+@@ -1510,8 +1483,7 @@ void XDLauncherDialog::OnImportFromGbLink(int device)
            {
              ModalMessageBox::warning(
                  this, tr("OrreLink"),
@@ -169,7 +169,7 @@ index 1c30f5efd..e2dedc7ac 100644
                      .arg(QString::fromStdString(dump.title), QString::fromStdString(error),
                           QString::fromStdString(backup_path)));
            }
-@@ -1515,8 +1487,7 @@ void XDLauncherDialog::OnImportFromGbLink(int device)
+@@ -1526,8 +1498,7 @@ void XDLauncherDialog::OnImportFromGbLink(int device)
              }
              ModalMessageBox::information(
                  this, tr("OrreLink"),
@@ -179,7 +179,7 @@ index 1c30f5efd..e2dedc7ac 100644
                      .arg(QString::fromStdString(dump.title), QString::fromStdString(status),
                           QString::fromStdString(backup_path)));
            }
-@@ -1535,12 +1506,12 @@ void XDLauncherDialog::OnImportFromGbLink(int device)
+@@ -1546,12 +1517,12 @@ void XDLauncherDialog::OnImportFromGbLink(int device)
    {
      progress->close();
      ModalMessageBox::warning(this, tr("OrreLink"),

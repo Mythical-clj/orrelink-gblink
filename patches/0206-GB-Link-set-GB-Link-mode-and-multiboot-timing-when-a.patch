@@ -1,4 +1,4 @@
-From f75d0504111cde3b0ec95db0a7d7f08096297dcc Mon Sep 17 00:00:00 2001
+From 0a0703190aa5d69840cdafd33764f209118d2bcd Mon Sep 17 00:00:00 2001
 From: t <t@t>
 Date: Fri, 6 Nov 2026 13:44:04 -0600
 Subject: [PATCH] GB-Link: set GB-Link mode and multiboot timing when an

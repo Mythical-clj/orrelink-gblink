@@ -1,4 +1,4 @@
-From 4a85bc7adb0771c1f01a3782a7d2c22a4486fcc5 Mon Sep 17 00:00:00 2001
+From 01c9df4670b41020a41b893522c14fee39dbb819 Mon Sep 17 00:00:00 2001
 From: t <t@t>
 Date: Fri, 13 Nov 2026 00:02:51 -0600
 Subject: [PATCH] GBLink: real GBAs over JOY Bus (test firmware), local and
@@ -811,7 +811,7 @@ index 626d98acb..420a4b109 100644
        m_gc_tas_input_windows[i]->show();
        m_gc_tas_input_windows[i]->raise();
 diff --git a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
-index e2dedc7ac..578983511 100644
+index 2ef5348b0..a6f5da23e 100644
 --- a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
 +++ b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
 @@ -489,6 +489,10 @@ void XDLauncherDialog::CreateMainLayout()
@@ -825,7 +825,7 @@ index e2dedc7ac..578983511 100644
    gblink_layout->setColumnStretch(0, 1);
    gblink_box->setLayout(gblink_layout);
    layout->addWidget(gblink_box);
-@@ -992,6 +996,12 @@ void XDLauncherDialog::ConnectWidgets()
+@@ -1003,6 +1007,12 @@ void XDLauncherDialog::ConnectWidgets()
      GBLink::Manager::Get().SetMenuNavigation(on);
  #else
      (void)on;

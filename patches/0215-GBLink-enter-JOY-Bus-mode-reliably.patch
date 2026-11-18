@@ -1,4 +1,4 @@
-From 9aab0fe851008e2fad3283138f7ac3bf6e138354 Mon Sep 17 00:00:00 2001
+From 7fee613e5b351cf94f84800c353a35f059be672b Mon Sep 17 00:00:00 2001
 From: t <t@t>
 Date: Fri, 13 Nov 2026 01:51:22 -0600
 Subject: [PATCH] GBLink: enter JOY Bus mode reliably

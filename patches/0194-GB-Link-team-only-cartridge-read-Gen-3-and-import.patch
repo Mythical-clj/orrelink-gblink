@@ -1,4 +1,4 @@
-From 71ecd29a98db620121708eb5b215b302fe06fa23 Mon Sep 17 00:00:00 2001
+From b9e078cd550f2fb9428bbac3a1a99c08ae3c8a38 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 5 Nov 2026 08:42:22 -0600
 Subject: [PATCH] GB-Link: team-only cartridge read (Gen 3) and import
@@ -21,7 +21,7 @@ Claude-Session: https://claude.ai/code/session_01764cASb9aVVk2m6JupRMj5
  8 files changed, 311 insertions(+), 22 deletions(-)
 
 diff --git a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
-index cdfbc86ce..7b3cedfd7 100644
+index 6a42d5468..0b38ce544 100644
 --- a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
 +++ b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
 @@ -419,6 +419,11 @@ void XDLauncherDialog::CreateMainLayout()
@@ -44,7 +44,7 @@ index cdfbc86ce..7b3cedfd7 100644
    gblink_layout->setColumnStretch(0, 1);
    gblink_box->setLayout(gblink_layout);
    layout->addWidget(gblink_box);
-@@ -1286,7 +1292,15 @@ void XDLauncherDialog::OnImportFromGbLink(int device)
+@@ -1297,7 +1303,15 @@ void XDLauncherDialog::OnImportFromGbLink(int device)
            }
            std::string status;
            std::string error;
@@ -61,7 +61,7 @@ index cdfbc86ce..7b3cedfd7 100644
            {
              ModalMessageBox::warning(
                  this, tr("OrreLink"),
-@@ -1313,7 +1327,8 @@ void XDLauncherDialog::OnImportFromGbLink(int device)
+@@ -1324,7 +1338,8 @@ void XDLauncherDialog::OnImportFromGbLink(int device)
              if (progress_ptr)
                progress_ptr->setValue(percent);
            });

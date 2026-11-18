@@ -1,7 +1,7 @@
-From fd185362f4e7f818c9883dcb1c9c0225c09b6c47 Mon Sep 17 00:00:00 2001
+From a7cc444c74f7b27cfb0d87cb5046adea8d3bbc01 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 5 Nov 2026 02:00:20 -0600
-Subject: [PATCH 186/186] XD launcher: Real GBA (GB-Link) box and 'From GBA
+Subject: [PATCH] XD launcher: Real GBA (GB-Link) box and 'From GBA
  cartridge...' save import
 
 Shows GB-Link/GBA status, a controller on/off toggle, and a per-port button that reads the
@@ -13,7 +13,7 @@ the existing SaveImport path.
  2 files changed, 181 insertions(+), 2 deletions(-)
 
 diff --git a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
-index ad0720fee..b7aa3a81b 100644
+index 71b671d17..8bcedf979 100644
 --- a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
 +++ b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
 @@ -32,11 +32,13 @@
@@ -95,7 +95,7 @@ index ad0720fee..b7aa3a81b 100644
      save_row++;
    };
    add_save_row(&m_save_row_port2, tr("Your save (GBA port 2):"));
-@@ -860,6 +891,21 @@ void XDLauncherDialog::ConnectWidgets()
+@@ -871,6 +902,21 @@ void XDLauncherDialog::ConnectWidgets()
            [this] { OnImportSave(1); });
    connect(m_save_row_port3.import_button, &QPushButton::clicked, this,
            [this] { OnImportSave(2); });
@@ -117,7 +117,7 @@ index ad0720fee..b7aa3a81b 100644
    connect(m_save_row_port2.restore_button, &QPushButton::clicked, this,
            [this] { OnRestoreDefaultSave(1); });
    connect(m_save_row_port3.restore_button, &QPushButton::clicked, this,
-@@ -1158,6 +1204,129 @@ void XDLauncherDialog::OnImportSave(int device)
+@@ -1169,6 +1215,129 @@ void XDLauncherDialog::OnImportSave(int device)
    RefreshChecklist();
  }
  

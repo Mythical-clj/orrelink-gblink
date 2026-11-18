@@ -1,4 +1,4 @@
-From b192e4d9581fb17912fdf8326fc0a93b70175993 Mon Sep 17 00:00:00 2001
+From f47889817e270776cb8c514244d009220fd794f5 Mon Sep 17 00:00:00 2001
 From: t <t@t>
 Date: Fri, 13 Nov 2026 11:19:51 -0600
 Subject: [PATCH] Real GBA (JOY Bus) by default; mGBA features fold away; JOY
@@ -261,7 +261,7 @@ index b3f19517b..f8e787368 100644
      const bool mixed = RoomMixesCpuArchitectures();
      const bool safest = Config::Get(Config::NETPLAY_FORCE_COMMON_CORE_ON_MIXED_ARCH);
 diff --git a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
-index 578983511..c43d64852 100644
+index a6f5da23e..63225f784 100644
 --- a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
 +++ b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
 @@ -34,6 +34,7 @@
@@ -360,7 +360,7 @@ index 578983511..c43d64852 100644
  
    QRect r(QPoint(), size());
    r.moveCenter(parentWidget() ? parentWidget()->frameGeometry().center() : avail.center());
-@@ -1004,6 +1026,20 @@ void XDLauncherDialog::ConnectWidgets()
+@@ -1015,6 +1037,20 @@ void XDLauncherDialog::ConnectWidgets()
      GBLink::Manager::Get().SetJoybus(on);
  #endif
    });

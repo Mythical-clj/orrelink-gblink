@@ -1,4 +1,4 @@
-From 285f0a713b05f0afe8f3ab7492bca1cb1d33c904 Mon Sep 17 00:00:00 2001
+From f59740eb7cba1f13848f601ed4d2e49fd718eec2 Mon Sep 17 00:00:00 2001
 From: t <t@t>
 Date: Thu, 5 Nov 2026 13:46:26 -0600
 Subject: [PATCH] XD launcher: wrap QStringBuilder expressions before
@@ -11,10 +11,10 @@ Claude-Session: https://claude.ai/code/session_01764cASb9aVVk2m6JupRMj5
  1 file changed, 2 insertions(+), 2 deletions(-)
 
 diff --git a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
-index 8084266fa..fef5ad6c3 100644
+index 5bf43b19a..5bc18fbd4 100644
 --- a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
 +++ b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
-@@ -1457,7 +1457,7 @@ void XDLauncherDialog::OnShareTeam()
+@@ -1468,7 +1468,7 @@ void XDLauncherDialog::OnShareTeam()
  
    m_share_team_button->setEnabled(false);
    QPointer<XDLauncherDialog> self(this);
@@ -23,7 +23,7 @@ index 8084266fa..fef5ad6c3 100644
    const std::string body = "{\"team\":\"" + team_text + "\"}";
    std::thread([self, url, body, summary] {
      Common::HttpRequest request;
-@@ -1521,7 +1521,7 @@ void XDLauncherDialog::OnLoadTeamCode()
+@@ -1532,7 +1532,7 @@ void XDLauncherDialog::OnLoadTeamCode()
  
    m_load_team_button->setEnabled(false);
    QPointer<XDLauncherDialog> self(this);

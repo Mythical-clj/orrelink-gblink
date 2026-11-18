@@ -1,4 +1,4 @@
-From 0278600bfe60a96cd24d756079599abfad594f30 Mon Sep 17 00:00:00 2001
+From c6eca2ff63f90f7a6e0aab08fe325aeed91547a4 Mon Sep 17 00:00:00 2001
 From: t <t@t>
 Date: Tue, 10 Nov 2026 12:21:26 -0600
 Subject: [PATCH] GB-Link on Android: Java USB layer, JNI bridge, launcher card

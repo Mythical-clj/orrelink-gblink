@@ -1,4 +1,4 @@
-From 3926c040ed960ff4271c0ea38628fcd4b1678715 Mon Sep 17 00:00:00 2001
+From a7b9f6590ceb6f5ab019b2a4191e974131256cac Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 5 Nov 2026 02:19:43 -0600
 Subject: [PATCH] GB-Link: rename Manager to GBLinkManager (MSBuild object-name
@@ -52,7 +52,7 @@ index aee22b149..18de7143f 100644
        <TreatWarningAsError>false</TreatWarningAsError>
      </ClCompile>
 diff --git a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
-index b7aa3a81b..101d0b302 100644
+index 8bcedf979..77757d0ac 100644
 --- a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
 +++ b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
 @@ -86,7 +86,7 @@

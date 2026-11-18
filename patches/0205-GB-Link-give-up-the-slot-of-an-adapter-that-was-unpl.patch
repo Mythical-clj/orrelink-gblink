@@ -1,4 +1,4 @@
-From 5e0db0533c45f13fbcc741e1b4455350c2af4299 Mon Sep 17 00:00:00 2001
+From 403d6e2d49b74bb0b6341a7fbf7e3a0be96b4ee7 Mon Sep 17 00:00:00 2001
 From: t <t@t>
 Date: Fri, 6 Nov 2026 13:24:06 -0600
 Subject: [PATCH] GB-Link: give up the slot of an adapter that was unplugged or

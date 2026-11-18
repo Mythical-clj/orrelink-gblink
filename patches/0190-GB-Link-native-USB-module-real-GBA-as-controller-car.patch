@@ -1,8 +1,8 @@
-From f7621f6e71c655e887fb77388765eabab1b365ce Mon Sep 17 00:00:00 2001
+From 8a42d8221ac9c76cd3602b9dd564475bd165d1eb Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 5 Nov 2026 02:00:20 -0600
-Subject: [PATCH 185/186] GB-Link: native USB module, real GBA as controller,
- cartridge save dump
+Subject: [PATCH] GB-Link: native USB module, real GBA as controller, cartridge
+ save dump
 
 InputCommon/GBLink: libusb transport for the GB-Link adapter, multiboot of the OrreLink
 GBA agent (or stock Cart Doctor dumper), read-only cartridge save dump, and a Manager

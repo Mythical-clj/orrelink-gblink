@@ -1,4 +1,4 @@
-From c8044c2ea5f4a8368920b79fff0173e42b75365c Mon Sep 17 00:00:00 2001
+From fd8bece10ae021d80d80d69705c21ae485630bc2 Mon Sep 17 00:00:00 2001
 From: t <t@t>
 Date: Fri, 6 Nov 2026 13:11:16 -0600
 Subject: [PATCH] GB-Link: stale cancel after a cartridge read, palette only

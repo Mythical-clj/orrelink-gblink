@@ -1,4 +1,4 @@
-From 79c63aa799b3d06de7a3ae788954953e2d6039a6 Mon Sep 17 00:00:00 2001
+From 7e39624e240861590565f9243995fc68142b33a0 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 5 Nov 2026 00:42:57 -0600
 Subject: [PATCH] XD Netplay: read FireRed/LeafGreen party in Gen3Save and

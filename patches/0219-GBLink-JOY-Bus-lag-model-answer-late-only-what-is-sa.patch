@@ -1,4 +1,4 @@
-From 77f556c91f2c5911d26b3a653c1504693cd64181 Mon Sep 17 00:00:00 2001
+From b41f285939cc6ed6ca8626cddbc84ca02eb471d5 Mon Sep 17 00:00:00 2001
 From: t <t@t>
 Date: Fri, 13 Nov 2026 14:23:20 -0600
 Subject: [PATCH] GBLink JOY Bus lag model: answer late only what is safe to

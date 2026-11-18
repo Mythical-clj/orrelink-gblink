@@ -1,4 +1,132 @@
-# OrreLink
+# OrreLink + GB-Link
+
+**Play Pokémon XD's link battles with a real Game Boy Advance and your own
+cartridge, over the internet.** This is a fork of
+[OrreLink](https://github.com/logdog2325/orrelink) (a Dolphin fork for Pokémon
+XD GBA netplay) that talks to a [GB-Link](https://gblink.io) USB adapter. You
+plug a GBA into the adapter, the adapter into your computer, and the GBA acts
+as your GBA in the game. Your opponent can do the same, or play with the
+emulated GBA OrreLink has always offered.
+
+## Downloads
+
+**All builds are on the [Releases page](https://github.com/Mythical-clj/orrelink-gblink/releases).**
+
+- `win-test-N` is the Windows build and `mac-test-N` is the Apple Silicon Mac
+  build. Take the **highest number** of each. They are test builds: unsigned,
+  and not notarized, so macOS asks you to allow them.
+- **Everyone in a room must be on the same build.** Netplay refuses to connect
+  across builds, and a Windows and a Mac player need the `win-test-N` and
+  `mac-test-N` with the same N. Both are made by one run of the build.
+- Release notes only say which run made the build. What changed is in the
+  [patches](patches) (the newest ones are at the end).
+
+## What we added, and how it works
+
+### Real GBA mode (the default): JOY Bus
+
+XD talks to a GBA connected to the GameCube over the **JOY Bus** protocol. A
+GB-Link running the experimental JOY Bus firmware speaks that protocol to a real
+GBA. So OrreLink does not emulate a GBA at all in this mode. The game's own
+link code on the GameCube side sends its commands to the real GBA, and the
+GBA's real answers come back.
+
+- **Setup:** flash the GB-Link with chasem-dev's
+  [JOY Bus preview firmware](https://github.com/chasem-dev/GBLink-Firmware/releases/tag/gamecube-joybus-preview-11)
+  (`gblink-gamecube-joybus-*.uf2`). The stock and the 3.0.0 beta firmware do
+  not have JOY Bus mode. Connect the GBA with a **six-wire GBC cable**.
+- **Use:** open OrreLink with the adapter plugged in and the GBA powered on.
+  The launcher's **Real GBA** box is on by default and shows the status. Host
+  or join a room as usual.
+- **Port assignment:** the host's GBA is GBA port 2 and the guest's is port 3.
+  OrreLink matches each port to a free adapter by itself, whatever the adapter's
+  own port setting says.
+- **Fallback:** with no JOY Bus adapter, OrreLink uses the mGBA mode below.
+
+### Over netplay
+
+Each GBA belongs to one machine, the one it is plugged into. That machine runs
+every command against its real GBA and sends each real answer to the room, and
+the other machines replay those answers to their copy of the game. Everything
+the room sees is therefore what the real GBA said, in order.
+
+A network trip per command would be far too slow (XD sends 270 to 540 commands
+a second in battle, and thousands per second while it uploads a program to the
+GBA). So a **lag model** (`SI/JoyBusLagModel.h`) is used on the machines that
+do not own the GBA:
+
+1. When XD repeats a command, answer it with the real reply to the same command
+   about 100 ms ago.
+2. During the program upload, answer the handshake acknowledgements ahead of
+   time, but only while the GBA's status says it is ready for the next word.
+3. Anything else waits for the real reply.
+
+Streams of words being fetched or sent are never answered from the past. In a
+replay of recorded sessions about 1% of commands had to wait. Settings:
+**Netplay lag test** in the launcher turns the model on in a solo game, to
+test it without a second player.
+
+### mGBA emulation mode
+
+Everything the fork did before JOY Bus is still there, under the launcher's
+collapsible **mGBA emulation** section, for adapters on stock firmware:
+
+| Feature | What it does |
+|---|---|
+| **Real GBA as the controller** | Power the GBA on holding START + SELECT (cartridge in or out). OrreLink sends it a small program (the *agent*, about 20 KB, over the multiboot link) and the GBA's buttons then drive the emulated GBA. Hold L + R + Start + Select for 2 seconds to release it. |
+| **Read my cartridge** | Reads the party and trainer sections of a Gen 3 save through the agent (Emerald, FireRed, LeafGreen, and Ruby/Sapphire as far as the format allows), read-only. A full dump is a checkbox. The result becomes your GBA port 2 save, with a raw backup in `User/GBLink Dumps`. |
+| **Team goes with you into a room** | After a cartridge read, joining an XD room sends that team to the host on its own. Submit Team still works for a Showdown paste. |
+| **Menu navigation (optional)** | The real GBA can also drive XD's own menus as the GameCube pad on port 1. |
+| **Screen mirroring** | The emulated GBA's screen (your move menu) is drawn on the real GBA, as changed tiles packed between the controller polls. |
+| **Up to four GB-Links** | One adapter per GBA, each found by its USB port, and each assigned an emulated GBA in the launcher. |
+
+### Files and logs
+
+- `User/Logs/GBLink.log` records the adapter, which mode it is in, replies per
+  second and, in netplay, how many commands waited, were answered late or
+  were predicted.
+- `User/Logs/JoyTrace.txt` records every JOY Bus command and reply (capped at
+  48 MB). Send both files when reporting a problem.
+
+### Status
+
+- **Tested on hardware:** JOY Bus play alone on Windows (no noticeable lag);
+  netplay between Windows and Mac in mGBA mode (screen mirroring and
+  controller); JOY Bus netplay up to the choose-your-Pokémon screen.
+- **Verified only by replaying recordings:** the lag model's handling of the
+  choose-your-Pokémon screen, which had disconnected the host's GBA.
+- **Not tested yet:** whole battles in JOY Bus netplay, an Everdrive cartridge,
+  four-player, Linux and Android in JOY Bus mode.
+- Only the USA XD disc is supported, as in OrreLink.
+
+### Under the hood
+
+- **Adapter:** GB-Link, USB `1209:B011` in JOY Bus mode (stock firmware is
+  `2FE3`). JOY Bus commands are `0x00` status, `0x14` read, `0x15` write and
+  `0xFF` reset. They go to the adapter as a transfer (`0x50`) and the reply
+  comes back with the wiring state (`InputCommon/GBLink`, `SI_DeviceGBALink`).
+- **Netplay:** replies travel as `JoyReply` messages, and the host decides
+  whether the room uses JOY Bus.
+- **mGBA mode agent** (`gba-agent/`, C for devkitARM, built by CI and embedded
+  into the build): a command loop over the multiboot link that reports keys,
+  dumps saves and draws mirrored tiles.
+- `gblink-native/` builds `gblink-probe`, a command-line tool to test the
+  adapter without Dolphin. `orrelink-hub/` is an unfinished, optional team-code
+  web service that nothing depends on.
+- The fork is a series of patches on a pinned Dolphin base: `patches/0001`
+  to `0183` are upstream OrreLink up to the point this fork began, `0184` to
+  `0188` are later upstream releases (v1.8.2 and v1.8.3, battle records), and
+  `0189` to `0219` are the GB-Link work. CI applies them in order.
+
+### Credits for this fork
+
+- **chasem-dev** wrote the GB-Link JOY Bus firmware this relies on.
+- **GB-Link** (gblink.io) made the adapter.
+- Everything else is credited at the end of this page.
+
+---
+
+# About OrreLink (the upstream project)
 
 **Pokémon XD: Gale of Darkness GBA-vs-GBA battles over the internet.** Two
 players, each with their own emulated Game Boy Advance running Emerald, fight
@@ -34,89 +162,6 @@ sample teams and tournament results are in the
 - **When something goes wrong, the log knows.** One button shares it, and a
   crash leaves a report next to it.
 
-## This fork: play with a real GBA (GB-Link)
-
-This fork (`gblink-dev`) adds a **native, no-browser** path for a real Game Boy
-Advance and a stock [GB-Link](https://gblink.io) USB adapter. Plug the adapter
-into the PC, connect the GBA with a link cable, and the GBA plays XD while the
-emulated Emerald does the battle engine. Everything happens inside OrreLink:
-there is no web page, no extra firmware on the adapter and no gamepad driver.
-Windows is the tested platform (libusb is built into the Windows build).
-
-### What was added
-
-| Feature | What it does |
-|---|---|
-| **Real GBA as the controller** | Power the GBA on holding START + SELECT (cartridge in or out). OrreLink sends it a small program (the *agent*, about 20 KB, over the multiboot link) and the GBA's buttons then drive the emulated GBA. Hold L + R + Start + Select for 2 seconds to release it. |
-| **Read my cartridge** | Launcher buttons read the cartridge save through the agent, read-only. By default only the trainer info and party sections of a Gen 3 save are read (Emerald, FireRed, LeafGreen, and Ruby/Sapphire as far as the format allows). That is a few seconds instead of a full dump. "Read the whole save" is a checkbox. The result becomes your GBA port 2 save, with a raw backup copy kept in `User/GBLink Dumps`. |
-| **Team goes with you into a room** | After reading a cartridge, joining an XD room sends that team to the host on its own (a party bundle, the same data "Use my save" in Submit Team sends). Submit Team still works if you want a Showdown paste instead. A typed team you sent earlier is left alone until you read a cartridge again. |
-| **Menu navigation (optional)** | A checkbox lets the real GBA also act as the GameCube pad on port 1, so XD's own menus can be driven with it. It is off by default. |
-| **Standby picture** | When the GBA becomes a controller it shows an XD picture instead of the multiboot screen. |
-| **Screen mirroring** | The emulated GBA's screen (your move menu in a link battle) is drawn on the real GBA. A fixed 252-colour palette maps every pixel the same way every time, and only the 8x8 tiles that changed are sent, packed between the controller polls, so the buttons keep reporting while the picture updates. A whole new scene fills in over a few seconds, a menu cursor in a blink. A checkbox turns it off. |
-| **Up to four GB-Links** | Plug in as many as four adapters, each with its own GBA. Each adapter is found by the USB port it is plugged into and gets its own connection, so the same port always means the same GBA. In the launcher each one picks which emulated GBA it plays ("Automatic" is every GBA port for a single adapter, and port 1, 2, 3, 4 in order for several), and a picker chooses which adapter the "From GBA cartridge" buttons read. Keys, screen mirroring and cartridge reads all follow that assignment. |
-| **Diagnostics** | `User/Logs/GBLink.log` records the adapter, the controller poll rate, key changes and mirroring statistics. |
-
-### How to use it
-
-1. Download the latest Windows build from this fork's
-   [Actions](https://github.com/Mythical-clj/orrelink-gblink/actions) page
-   (`Build XD Netplay`, artifact for Windows) and unzip it.
-2. Plug in the GB-Link, connect the GBA, and power the GBA on holding START + SELECT.
-3. Open OrreLink. In the launcher, the *Real GBA* box shows the status. "Use my
-   real GBA as the controller" is on by default.
-4. To bring your real team: press the cartridge-read button for GBA port 2, with your
-   cartridge in the GBA (leave it on).
-5. Search for a match, host, or join a code. When you join, your team is sent on its own.
-   Your GBA is the controller for the battle.
-
-Every machine needs the same OrreLink build, as before. Only the player
-using a real GBA needs the adapter.
-
-### Under the hood
-
-- **Adapter protocol:** USB VID `0x2FE3`, command endpoints `0x01/0x81`, data
-  endpoints `0x02/0x82`, 32-bit SPI words batched up to 14 per USB write
-  (`InputCommon/GBLink`).
-- **Agent** (`gba-agent/`, C for devkitARM, built by CI and embedded into the
-  Dolphin build): a command loop over the link. Commands include info, save
-  dump, ranged save reads (used for the team-only read), the controller loop,
-  and a staged picture. Data moves in 256-byte sections with an XOR checksum
-  and retries.
-- **Controller loop:** the agent replies to every exchange with the current
-  keys (`0x4B50....`). The PC polls about 3,000 times a second.
-- **Mirroring:** the agent also accepts tile packets (`0x4754nnnn`, up to 16
-  tiles of 17 words and a checksum) and answers with an acknowledgement
-  (`0x4B41000x`). `ScreenMirror` quantizes, diffs and packs; the GBA core's
-  per-frame callback feeds it the frame of the emulated GBA that is local to
-  this machine.
-- **Teams:** `PartyBundle` (617 bytes) is the slimmed-down save data netplay
-  already carries; the team-only read produces exactly that.
-- **Other tools:** `gblink-native/` builds `gblink-probe`, a command-line tool
-  for testing the adapter without Dolphin (`list`, `info`, `dump`, `pad`,
-  `team`, and `pad --mirror-test`). `orrelink-hub/` is an unfinished, optional
-  team-code web service; nothing in the app depends on it (its buttons stay
-  hidden until a hub URL is set).
-
-### Status and limits
-
-- Tested on hardware: multiboot of the agent, the controller (about 3,000
-  polls per second, all ten keys), the team-only cartridge read, and the
-  standby picture.
-- Written but **not yet tested on hardware**: screen mirroring, automatic team
-  send when joining a room, and a real-GBA controller across two machines.
-- Only the USA XD disc is supported, as in upstream OrreLink.
-- Not supported: other adapters, GBA-less spectator mirroring, macOS and Linux
-  builds of the GB-Link code (the code is portable, the builds are not set up).
-
-### Changes by patch
-
-The fork is a set of patches (`patches/0001`-`0214`) applied on a pinned
-Dolphin base. The GB-Link work is patches **0184-0214**:
-adapter and agent plumbing, controller, cartridge read, team-only read,
-diagnostics log, menu navigation, standby picture, team-code buttons
-(hidden by default), automatic team send on joining, and screen mirroring.
-`git log` has one commit per step.
-
 ## What you need
 
 | | |
@@ -130,7 +175,7 @@ None of these can be distributed here.
 ## Setup
 
 1. Download the build for your platform from
-   [Releases](https://github.com/logdog2325/orrelink/releases). Everyone in
+   [Releases](https://github.com/Mythical-clj/orrelink-gblink/releases) (the `win-test` and `mac-test` builds). Everyone in
    a match must be on the **same version**. Mismatched builds refuse to connect.
 2. **Desktop:** put the XD disc image, the Emerald ROM and the BIOS in one
    folder, then open the app. The OrreLink launcher opens on startup and sets

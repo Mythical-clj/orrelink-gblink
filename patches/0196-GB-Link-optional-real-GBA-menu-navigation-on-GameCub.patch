@@ -1,4 +1,4 @@
-From c0b0f1321547789672f79093a10fbede4a4782ff Mon Sep 17 00:00:00 2001
+From bfd4506099b463c8f8df0921ef0438a7a6e42fdc Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 5 Nov 2026 10:40:32 -0600
 Subject: [PATCH] GB-Link: optional real-GBA menu navigation on GameCube pad
@@ -86,7 +86,7 @@ index dff79653c..aff13b0ed 100644
  }
  
 diff --git a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
-index 7b3cedfd7..f8f527f9a 100644
+index 0b38ce544..47b344047 100644
 --- a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
 +++ b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
 @@ -424,6 +424,12 @@ void XDLauncherDialog::CreateMainLayout()
@@ -112,7 +112,7 @@ index 7b3cedfd7..f8f527f9a 100644
    gblink_layout->setColumnStretch(0, 1);
    gblink_box->setLayout(gblink_layout);
    layout->addWidget(gblink_box);
-@@ -906,6 +913,13 @@ void XDLauncherDialog::ConnectWidgets()
+@@ -917,6 +924,13 @@ void XDLauncherDialog::ConnectWidgets()
      GBLink::Manager::Get().SetControllerEnabled(on);
  #else
      (void)on;
@@ -126,7 +126,7 @@ index 7b3cedfd7..f8f527f9a 100644
  #endif
    });
    m_gblink_timer = new QTimer(this);
-@@ -1230,6 +1244,7 @@ void XDLauncherDialog::RefreshGbLinkStatus()
+@@ -1241,6 +1255,7 @@ void XDLauncherDialog::RefreshGbLinkStatus()
  #else
    m_gblink_status->setText(tr("GB-Link support is not available in this build."));
    m_gblink_pad_check->setEnabled(false);
