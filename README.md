@@ -62,19 +62,18 @@ do not own the GBA:
 3. Anything else waits for the real reply.
 
 Streams of words being fetched or sent are never answered from the past. In a
-replay of recorded sessions about 1% of commands had to wait. Settings:
-**Netplay lag test** in the launcher turns the model on in a solo game, to
-test it without a second player.
+replay of recorded sessions about 1% of commands had to wait.
 
 ### mGBA emulation mode
 
 Everything the fork did before JOY Bus is still there, under the launcher's
-collapsible **mGBA emulation** section, for adapters on stock firmware:
+collapsible **mGBA emulation** section (closed, with everything off, until you
+need it), for adapters on stock firmware:
 
 | Feature | What it does |
 |---|---|
 | **Real GBA as the controller** | Power the GBA on holding START + SELECT (cartridge in or out). OrreLink sends it a small program (the *agent*, about 20 KB, over the multiboot link) and the GBA's buttons then drive the emulated GBA. Hold L + R + Start + Select for 2 seconds to release it. |
-| **Read my cartridge** | Reads the party and trainer sections of a Gen 3 save through the agent (Emerald, FireRed, LeafGreen, and Ruby/Sapphire as far as the format allows), read-only. A full dump is a checkbox. The result becomes your GBA port 2 save, with a raw backup in `User/GBLink Dumps`. |
+| **Read my cartridge** | Reads the party and trainer sections of a Gen 3 save through the agent (Emerald, FireRed, LeafGreen, and Ruby/Sapphire as far as the format allows), read-only. A full dump is a checkbox. The result becomes your GBA port 2 save, with a raw backup in `User/GBLink Dumps`. A FireRed, LeafGreen, Ruby or Sapphire save is rebuilt into an Emerald save with the same party and trainer, so a LeafGreen team can battle (it still appears as Leaf). Boxes, items and story are not used. |
 | **Team goes with you into a room** | After a cartridge read, joining an XD room sends that team to the host on its own. Submit Team still works for a Showdown paste. |
 | **Menu navigation (optional)** | The real GBA can also drive XD's own menus as the GameCube pad on port 1. |
 | **Screen mirroring** | The emulated GBA's screen (your move menu) is drawn on the real GBA, as changed tiles packed between the controller polls. |
@@ -116,7 +115,7 @@ collapsible **mGBA emulation** section, for adapters on stock firmware:
 - The fork is a series of patches on a pinned Dolphin base: `patches/0001`
   to `0183` are upstream OrreLink up to the point this fork began, `0184` to
   `0188` are later upstream releases (v1.8.2 and v1.8.3, battle records), and
-  `0189` to `0219` are the GB-Link work. CI applies them in order.
+  `0189` to `0220` are the GB-Link work. CI applies them in order.
 
 ### Credits for this fork
 
