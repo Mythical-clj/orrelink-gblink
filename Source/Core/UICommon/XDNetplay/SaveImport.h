@@ -121,6 +121,14 @@ bool AddLibraryRom(const std::string& source_path, Gen3Game* game_out, std::stri
 // another game was imported and its ROM is available.
 Gen3Game NativeGameForDevice(int device);
 
+// Every Gen 3 ROM the launcher holds (Emerald, FireRed, LeafGreen, Ruby, Sapphire), for matching the
+// ROM a room asks for by hash.
+std::vector<std::string> LibraryRomFiles();
+
+// Experimental: a hosted room keeps the host's own FireRed/LeafGreen or Ruby/Sapphire port native.
+// Everyone in the room then needs that ROM.
+bool NativeRoomsEnabled();
+
 // Point ports 0-3 at the right ROM: Emerald everywhere, except sockets 1 and 2 when they hold a
 // native save. |all_emerald| (a Multi battle) forces Emerald on every port.
 void ApplyPortRoms(bool all_emerald);

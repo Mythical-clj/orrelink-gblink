@@ -569,6 +569,18 @@ void XDLauncherDialog::CreateMainLayout()
         tr("With a ROM here, importing a save from that game plays it natively. Without one the "
            "save is rebuilt as Emerald."));
     mgba_layout->addWidget(roms_box);
+    auto* native_rooms_check = new QCheckBox(tr("Experimental: play these games in rooms"));
+    native_rooms_check->setChecked(Config::Get(Config::MAIN_XD_NATIVE_ROOMS));
+    native_rooms_check->setToolTip(
+        tr("A hosted room keeps your FireRed/LeafGreen or Ruby/Sapphire port on its own game "
+           "instead of rebuilding it as Emerald. Your PC boxes are cleared in the copy that is "
+           "shared. Everyone in the room needs the same ROMs, and the guest's team still plays "
+           "as Emerald. Off by default."));
+    connect(native_rooms_check, &QCheckBox::toggled, this, [](bool on) {
+      Config::SetBaseOrCurrent(Config::MAIN_XD_NATIVE_ROOMS, on);
+      Config::Save();
+    });
+    mgba_layout->addWidget(native_rooms_check);
   }
   m_gblink_joybus_check = new QCheckBox(tr("Real GBA"));
   m_gblink_joybus_check->setChecked(Config::Get(Config::MAIN_GBLINK_JOYBUS));

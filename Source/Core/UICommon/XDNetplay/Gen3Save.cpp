@@ -446,7 +446,7 @@ bool VerifiedWriteSaveFile(const std::string& path, const EmeraldSave& save, std
       *error = "edited save does not re-parse: " + parse_error;
     return false;
   }
-  if (!reparsed->VerifyAllChecksums().empty())
+  if (!reparsed->VerifyAllChecksums(EmeraldSave::DetectGame(*reparsed)).empty())
   {
     if (error)
       *error = "edited save has checksum mismatches";

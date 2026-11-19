@@ -304,6 +304,7 @@ extern const Info<int> MAIN_XD_IMPORTED_GAME_3;
 extern const Info<std::string> MAIN_XD_ROM_EMERALD;
 extern const Info<std::string> MAIN_XD_ROM_FRLG;
 extern const Info<std::string> MAIN_XD_ROM_RS;
+extern const Info<bool> MAIN_XD_NATIVE_ROOMS;
 extern const Info<int> MAIN_XD_NATIVE_GAME_2;
 extern const Info<int> MAIN_XD_NATIVE_GAME_3;
 

@@ -5,6 +5,7 @@
 
 #include "UICommon/XDNetplay/BattleCustomizer.h"
 
+#include <algorithm>
 #include <atomic>
 #include <mutex>
 #include <optional>
@@ -29,6 +30,7 @@
 
 #include "UICommon/XDNetplay/Gen3Save.h"
 #include "UICommon/XDNetplay/PartyBundle.h"
+#include "UICommon/XDNetplay/SaveImport.h"
 #include "UICommon/XDNetplay/TeamInjector.h"
 
 namespace XDNetplay::DisposableSave
@@ -167,6 +169,72 @@ void RunPendingRestore()
   RestoreNow(2);
 }
 
+// A room save for a port that stays native (FireRed/LeafGreen or Ruby/Sapphire): the player's own
+// save of that game with every PC box cleared, so the boxes never leave their machine. The trainer,
+// party, bag and progress stay, because the game itself needs them. The older block is replaced by a
+// copy of the active one (one save older), so no earlier save survives in the file.
+std::optional<EmeraldSave> BuildNativeRoomSave(const EmeraldSave& save, Gen3Game game,
+                                               std::string* error)
+{
+  constexpr size_t SECTION = EmeraldSave::SECTION_SIZE;
+  constexpr size_t BLOCK = EmeraldSave::BLOCK_SIZE;
+  constexpr size_t FOOTER = EmeraldSave::SECTION_FOOTER_OFFSET;
+  const std::vector<u8>& raw = save.ToBytes();
+  if (raw.size() < 2 * BLOCK)
+  {
+    if (error)
+      *error = "the native save is too small";
+    return std::nullopt;
+  }
+
+  const int active = save.GetActiveBlock();
+  const auto& lengths = EmeraldSave::SectionDataLengths(game);
+  std::vector<u8> out(raw);
+  std::copy(raw.begin() + active * BLOCK, raw.begin() + (active + 1) * BLOCK,
+            out.begin() + (1 - active) * BLOCK);
+
+  const auto read16 = [&out](size_t at) { return u32{out[at]} | (u32{out[at + 1]} << 8); };
+  const auto read32 = [&out](size_t at) {
+    return u32{out[at]} | (u32{out[at + 1]} << 8) | (u32{out[at + 2]} << 16) |
+           (u32{out[at + 3]} << 24);
+  };
+  for (const int block : {active, 1 - active})
+  {
+    for (size_t slot = 0; slot < EmeraldSave::SECTIONS_PER_BLOCK; ++slot)
+    {
+      const size_t base = static_cast<size_t>(block) * BLOCK + slot * SECTION;
+      const u32 id = read16(base + FOOTER);
+      if (id >= 5 && id <= 13)
+      {
+        std::fill(out.begin() + base, out.begin() + base + FOOTER, u8{0});
+        const u32 sum = EmeraldSave::SectionChecksum(out.data(), base, lengths[id]);
+        out[base + FOOTER + 2] = static_cast<u8>(sum & 0xFF);
+        out[base + FOOTER + 3] = static_cast<u8>(sum >> 8);
+      }
+      if (block != active)
+      {
+        const u32 index = read32(base + FOOTER + 8);
+        if (index > 0)
+        {
+          const u32 older = index - 1;
+          for (int i = 0; i < 4; ++i)
+            out[base + FOOTER + 8 + i] = static_cast<u8>(older >> (8 * i));
+        }
+      }
+    }
+  }
+
+  std::string parse_error;
+  auto room_save = EmeraldSave::Create(std::move(out), &parse_error);
+  if (!room_save)
+  {
+    if (error)
+      *error = "the room save for this game could not be built (" + parse_error + ")";
+    return std::nullopt;
+  }
+  return room_save;
+}
+
 // Build the disposable image for one imported port from `source_bytes` (the
 // imported save). Returns std::nullopt with *error on any failure; the FRLG
 // case gets a hosting-specific message (Extract's own text explains submission,
@@ -185,6 +253,15 @@ std::optional<EmeraldSave> BuildDisposable(int device, std::vector<u8> source_by
   if (!imported)
     return fail(fmt::format("the imported save on GBA port {} is unreadable ({})", device + 1,
                             parse_error));
+
+  // Experimental native rooms: the host's own port keeps its game, so the room save is that game's
+  // save with the boxes cleared and not an Emerald rebuild.
+  if (device == 1 && SaveImport::NativeRoomsEnabled())
+  {
+    const Gen3Game game = EmeraldSave::DetectGame(*imported);
+    if (game != Gen3Game::Emerald && SaveImport::NativeGameForDevice(device) == game)
+      return BuildNativeRoomSave(*imported, game, error);
+  }
 
   // Mirror of the FRLG submission refusal, for the mirror-image reason: the
   // party-bundle extractor cannot read a FireRed/LeafGreen save (its party

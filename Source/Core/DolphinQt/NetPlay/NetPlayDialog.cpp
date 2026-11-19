@@ -2575,6 +2575,16 @@ std::string NetPlayDialog::FindGBARomPath(const std::array<u8, 20>& hash, std::s
         return rom_path;
       }
     }
+    // The launcher's own ROM folder (Emerald, FireRed, LeafGreen, Ruby, Sapphire), so a room that
+    // runs another Gen 3 game finds it without asking.
+    for (const std::string& library_path : XDNetplay::SaveImport::LibraryRomFiles())
+    {
+      if (HW::GBA::Core::GetRomInfo(library_path.c_str(), rom_hash, rom_title) &&
+          rom_hash == hash && rom_title == title)
+      {
+        return library_path;
+      }
+    }
     while (!(rom_path = GameCubePane::GetOpenGBARom(title)).empty())
     {
       if (HW::GBA::Core::GetRomInfo(rom_path.c_str(), rom_hash, rom_title))

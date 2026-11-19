@@ -447,6 +447,7 @@ const Info<int> MAIN_XD_IMPORTED_GAME_3{{System::Main, "XDNetplay", "ImportedGam
 const Info<std::string> MAIN_XD_ROM_EMERALD{{System::Main, "XDNetplay", "RomEmerald"}, ""};
 const Info<std::string> MAIN_XD_ROM_FRLG{{System::Main, "XDNetplay", "RomFrlg"}, ""};
 const Info<std::string> MAIN_XD_ROM_RS{{System::Main, "XDNetplay", "RomRs"}, ""};
+const Info<bool> MAIN_XD_NATIVE_ROOMS{{System::Main, "XDNetplay", "NativeRooms"}, false};
 const Info<int> MAIN_XD_NATIVE_GAME_2{{System::Main, "XDNetplay", "NativeGame2"}, 0};
 const Info<int> MAIN_XD_NATIVE_GAME_3{{System::Main, "XDNetplay", "NativeGame3"}, 0};
 const Info<std::string> MAIN_XD_SUBMIT_TEAM_B64{{System::Main, "XDNetplay", "SubmitTeamB64"}, ""};

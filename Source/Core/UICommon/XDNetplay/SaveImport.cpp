@@ -773,6 +773,34 @@ bool AddLibraryRom(const std::string& source_path, Gen3Game* game_out, std::stri
 #endif
 }
 
+std::vector<std::string> LibraryRomFiles()
+{
+  std::vector<std::string> files;
+#ifdef HAS_LIBMGBA
+  const auto add = [&files](const std::string& path) {
+    if (path.empty() || !File::Exists(path))
+      return;
+    for (const std::string& known : files)
+    {
+      if (known == path)
+        return;
+    }
+    files.push_back(path);
+  };
+  add(Config::Get(Config::MAIN_XD_ROM_EMERALD));
+  add(Config::Get(Config::MAIN_XD_ROM_FRLG));
+  add(Config::Get(Config::MAIN_XD_ROM_RS));
+  for (const char* name : {"EMERALD.gba", "FIRERED.gba", "LEAFGREEN.gba", "RUBY.gba", "SAPPHIRE.gba"})
+    add(File::GetUserPath(D_GBAUSER_IDX) + name);
+#endif
+  return files;
+}
+
+bool NativeRoomsEnabled()
+{
+  return Config::Get(Config::MAIN_XD_NATIVE_ROOMS);
+}
+
 Gen3Game NativeGameForDevice(int device)
 {
 #ifndef HAS_LIBMGBA
@@ -822,6 +850,11 @@ bool PrepareNativePortsForRoom(std::string* error)
   for (const int device : {1, 2})
   {
     if (NativeGameForDevice(device) == Gen3Game::Emerald)
+      continue;
+    // Experimental: the host's own port keeps its game. DisposableSave then shares a stripped
+    // save of that game instead of an Emerald rebuild. Port 3 is where a guest's team is
+    // written, which only an Emerald save takes.
+    if (device == 1 && NativeRoomsEnabled())
       continue;
     // Read the native save through the port's own ROM, then rebuild it as Emerald.
     const std::string native_path = SavePathForDevice(device);
