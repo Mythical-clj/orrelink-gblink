@@ -4649,7 +4649,8 @@ void NetPlayClient::OnJoyReply(sf::Packet& packet)
 // called from ---CPU--- thread
 // The reply to the port's command number |seq| (from 1). Replies arrive in order and are kept,
 // so any one that has arrived can be asked for again.
-bool NetPlayClient::WaitJoyReply(int port, u32 seq, int* len, u8* data)
+bool NetPlayClient::WaitJoyReply(int port, u32 seq, int* len, u8* data,
+                                 const std::function<void()>* pump)
 {
   if (port < 0 || static_cast<size_t>(port) >= m_joy_replies.size() || seq == 0)
     return false;
@@ -4659,7 +4660,19 @@ bool NetPlayClient::WaitJoyReply(int port, u32 seq, int* len, u8* data)
   {
     if (!m_is_running.IsSet() || PadOwnerHasLeftRoom(port))
       return false;
-    m_joy_cv.wait_for(lk, std::chrono::milliseconds(20));
+    if (pump)
+    {
+      lk.unlock();
+      (*pump)();
+      lk.lock();
+      if (replies.size() >= seq)
+        break;
+      m_joy_cv.wait_for(lk, std::chrono::milliseconds(1));
+    }
+    else
+    {
+      m_joy_cv.wait_for(lk, std::chrono::milliseconds(20));
+    }
   }
   const JoyReplyEntry& entry = replies[seq - 1];
   if (entry.seq != seq)
@@ -4776,11 +4789,11 @@ void SendJoyReply(int port, u32 seq, int len, const u8* data)
     netplay_client->SendJoyReply(port, seq, len, data);
 }
 
-bool WaitJoyReply(int port, u32 seq, int* len, u8* data)
+bool WaitJoyReply(int port, u32 seq, int* len, u8* data, const std::function<void()>* pump)
 {
   // Not under crit_netplay_client: this waits for the network, and stopping must not wait for it.
   NetPlayClient* const client = netplay_client;
-  return client && client->WaitJoyReply(port, seq, len, data);
+  return client && client->WaitJoyReply(port, seq, len, data, pump);
 }
 
 bool LocalGcPadPlays(int local_pad)

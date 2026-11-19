@@ -10,6 +10,8 @@
 #include <fmt/format.h>
 
 #include <fstream>
+#include <functional>
+#include <vector>
 #include <mutex>
 
 #include "Common/FileUtil.h"
@@ -28,6 +30,9 @@ namespace SerialInterface
 {
 namespace
 {
+// The owners of real GBAs (pipelined) on this machine. Only the CPU thread touches it.
+std::vector<CSIDevice_GBALink*> s_pipelined_owners;
+
 void JoyLog(const std::string& line)
 {
 #ifdef ORRELINK_JOYBUS
@@ -175,6 +180,9 @@ CSIDevice_GBALink::CSIDevice_GBALink(Core::System& system, SIDevices device, int
 
 CSIDevice_GBALink::~CSIDevice_GBALink()
 {
+  s_pipelined_owners.erase(
+      std::remove(s_pipelined_owners.begin(), s_pipelined_owners.end(), this),
+      s_pipelined_owners.end());
 #ifdef ORRELINK_JOYBUS
   for (const Inflight& f : m_inflight)
   {
@@ -374,6 +382,11 @@ int CSIDevice_GBALink::RunBuffer(u8* buffer, int request_length)
     {
       if (m_owner == 1 && !pipelined)
         m_real.push_back(real);
+      if (pipelined && std::find(s_pipelined_owners.begin(), s_pipelined_owners.end(), this) ==
+                           s_pipelined_owners.end())
+      {
+        s_pipelined_owners.push_back(this);
+      }
       const auto fetch = [this](u32 index) {
         JoyBusLagModel::Reply r;
         r.len = -1;
@@ -388,7 +401,14 @@ int CSIDevice_GBALink::RunBuffer(u8* buffer, int request_length)
         const auto t0 = std::chrono::steady_clock::now();
         int len = -1;
         u8 data[5] = {};
-        if (NetPlay::WaitJoyReply(m_device_number, index + 1, &len, data) && len > 0 && len <= 5)
+        // While this machine waits for another's reply, its own replies that are in go out: the
+        // other machine may be waiting for exactly those (each side behind the other's wait).
+        static const std::function<void()> pump = [] {
+          for (CSIDevice_GBALink* owner : s_pipelined_owners)
+            owner->CollectReady();
+        };
+        if (NetPlay::WaitJoyReply(m_device_number, index + 1, &len, data, &pump) && len > 0 &&
+            len <= 5)
         {
           r.len = static_cast<s8>(len);
           std::copy(data, data + len, r.data.begin());

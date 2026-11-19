@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <functional>
 #include <SFML/Network/Packet.hpp>
 #include <array>
 #include <atomic>
@@ -312,7 +313,7 @@ public:
 
   // Real GBAs on GB-Link adapters (NetPlay::SendJoyReply / WaitJoyReply).
   void SendJoyReply(int port, u32 seq, int len, const u8* data);
-  bool WaitJoyReply(int port, u32 seq, int* len, u8* data);
+  bool WaitJoyReply(int port, u32 seq, int* len, u8* data, const std::function<void()>* pump = nullptr);
   const PadMappingArray& GetWiimoteMapping() const;
 
   void AdjustPadBufferSize(unsigned int size);

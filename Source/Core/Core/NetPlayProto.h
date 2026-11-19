@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <functional>
 #include <array>
 #include <string>
 
@@ -388,7 +389,9 @@ int JoyOwner(int port);
 // The owner's side: the reply to the port's command number `seq` (len < 0: no reply), for the room.
 void SendJoyReply(int port, u32 seq, int len, const u8* data);
 // Everyone else's: waits for that reply. False when the game stopped or the owner left.
-bool WaitJoyReply(int port, u32 seq, int* len, u8* data);
+// |pump|, when given, is run about every millisecond while waiting: the owner's own replies still
+// on their way must not sit behind a wait for someone else's.
+bool WaitJoyReply(int port, u32 seq, int* len, u8* data, const std::function<void()>* pump = nullptr);
 // Whether this machine's local GameCube pad `local_pad` plays a GameCube port in the running
 // netplay game (a joiner's never does: its only ports are GBAs); outside a netplay game, true.
 // Lock-free, like GbaInputPadFor.
