@@ -4,6 +4,7 @@
 #include "InputCommon/GBLink/GBLinkManager.h"
 
 #include <algorithm>
+#include <atomic>
 #include <map>
 #include <chrono>
 #include <thread>
@@ -25,6 +26,7 @@ namespace GBLink
 {
 namespace
 {
+std::atomic<void (*)(int, uint32_t, int, const uint8_t*)> s_reply_send{nullptr};
 using Clock = std::chrono::steady_clock;
 
 constexpr int kDumpWaitForGbaSeconds = 90;
@@ -222,7 +224,8 @@ int Link::JoyEnd(uint8_t* rx, double* usb_ms)
   return m_joy.got;
 }
 
-uint32_t Link::JoyQueue(int device, const uint8_t* tx, int tx_len, int rx_len)
+uint32_t Link::JoyQueue(int device, const uint8_t* tx, int tx_len, int rx_len, int kind,
+                        bool is_status, int net_port, uint32_t net_seq)
 {
   if (!m_joy_ready || tx_len < 1 || tx_len > 5 || rx_len < 1 || rx_len > 5)
     return 0;
@@ -244,6 +247,10 @@ uint32_t Link::JoyQueue(int device, const uint8_t* tx, int tx_len, int rx_len)
     q.tx_len = tx_len;
     q.rx_len = rx_len;
     q.id = id;
+    q.kind = kind;
+    q.is_status = is_status;
+    q.net_port = net_port;
+    q.net_seq = net_seq;
     m_joyq.push_back(q);
   }
   m_cv.notify_all();
@@ -396,12 +403,15 @@ void Link::RunJoybus(UsbLink& usb)
   auto stat_time = Clock::now();
   uint64_t stat_ok = 0, stat_none = 0;
   double stat_ms = 0, stat_ms_max = 0;
+  uint8_t last_status[3] = {};
+  bool have_last_status = false;
 
   while (true)
   {
     JoyRequest req;
     bool have = false;
     bool queued = false;  // req came from the pipelined line, not the single slot
+    JoyQueued line_item;  // (when queued)
     std::unique_ptr<DumpRequest> dump;
     {
       std::unique_lock lock(m_mutex);
@@ -425,6 +435,7 @@ void Link::RunJoybus(UsbLink& usb)
         req.id = q.id;
         queued = true;
         have = true;
+        line_item = q;
         m_joyq.pop_front();
       }
     }
@@ -439,25 +450,75 @@ void Link::RunJoybus(UsbLink& usb)
       break;
 
     const auto now = Clock::now();
-    if (have)
+    if (have && queued && line_item.kind != 0)
     {
-      const auto t0 = Clock::now();
-      const int got = transfer(req.tx, req.tx_len, req.rx, req.rx_len);
-      const double ms = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+      // A place in the line for a command that is not sent: in its turn it is answered with the
+      // latest status the GBA gave, or with nothing.
+      int got = -1;
+      if (line_item.kind == 1 && have_last_status && req.rx_len == 3)
+      {
+        got = 3;
+        std::copy(last_status, last_status + 3, req.rx);
+      }
+      bool abandoned;
       {
         std::lock_guard lock(m_mutex);
-        if (queued)
+        abandoned = m_joyq_abandoned.erase(req.id) != 0;
+      }
+      if (!abandoned)
+      {
+        if (line_item.net_port >= 0)
         {
-          if (m_joyq_abandoned.erase(req.id) == 0)
-          {
-            JoyQueuedResult result;
-            std::copy(req.rx, req.rx + 5, result.rx);
-            result.got = got;
-            result.usb_ms = ms;
-            m_joyq_done[req.id] = result;
-          }
+          if (const auto send = s_reply_send.load())
+            send(line_item.net_port, line_item.net_seq, got, req.rx);
         }
-        else if (m_joy.pending && m_joy.id == req.id)  // (not given up on meanwhile)
+        JoyQueuedResult result;
+        std::copy(req.rx, req.rx + 5, result.rx);
+        result.got = got;
+        result.usb_ms = 0;
+        {
+          std::lock_guard lock(m_mutex);
+          m_joyq_done[req.id] = result;
+        }
+        m_joy_cv.notify_all();
+      }
+    }
+    else if (have)
+    {
+      const auto t0 = Clock::now();
+      int got = transfer(req.tx, req.tx_len, req.rx, req.rx_len);
+      const double ms = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+      if (queued && line_item.is_status && got == 3)
+      {
+        std::copy(req.rx, req.rx + 3, last_status);
+        have_last_status = true;
+      }
+      if (queued)
+      {
+        // To the room first, so that replies leave in the order of the line, whoever collects.
+        bool abandoned;
+        {
+          std::lock_guard lock(m_mutex);
+          abandoned = m_joyq_abandoned.erase(req.id) != 0;
+        }
+        if (!abandoned)
+        {
+          if (line_item.net_port >= 0)
+          {
+            if (const auto send = s_reply_send.load())
+              send(line_item.net_port, line_item.net_seq, got == req.rx_len ? got : -1, req.rx);
+          }
+          JoyQueuedResult result;
+          std::copy(req.rx, req.rx + 5, result.rx);
+          result.got = got;
+          result.usb_ms = ms;
+          std::lock_guard lock(m_mutex);
+          m_joyq_done[req.id] = result;
+        }
+      }
+      {
+        std::lock_guard lock(m_mutex);
+        if (!queued && m_joy.pending && m_joy.id == req.id)  // (not given up on meanwhile)
         {
           std::copy(req.rx, req.rx + 5, m_joy.rx);
           m_joy.got = got;
@@ -1260,17 +1321,23 @@ bool Manager::JoyBegin(int device, const uint8_t* tx, int tx_len, int rx_len)
   return false;
 }
 
-uint32_t Manager::JoyQueue(int device, const uint8_t* tx, int tx_len, int rx_len)
+void Manager::SetJoyReplySink(void (*send)(int port, uint32_t seq, int len, const uint8_t* data))
+{
+  s_reply_send = send;
+}
+
+uint32_t Manager::JoyQueue(int device, const uint8_t* tx, int tx_len, int rx_len, int kind, bool is_status,
+                           int net_port, uint32_t net_seq)
 {
   for (const auto& slot : m_links)
   {
     Link* l = slot.load();
     if (l && l->JoyDevice() == device)
-      return l->JoyQueue(device, tx, tx_len, rx_len);
+      return l->JoyQueue(device, tx, tx_len, rx_len, kind, is_status, net_port, net_seq);
   }
   if (Link* l = LinkFor(device))
   {
-    if (const uint32_t id = l->JoyQueue(device, tx, tx_len, rx_len))
+    if (const uint32_t id = l->JoyQueue(device, tx, tx_len, rx_len, kind, is_status, net_port, net_seq))
       return id;
   }
   for (const auto& slot : m_links)
@@ -1278,7 +1345,7 @@ uint32_t Manager::JoyQueue(int device, const uint8_t* tx, int tx_len, int rx_len
     Link* l = slot.load();
     if (l)
     {
-      if (const uint32_t id = l->JoyQueue(device, tx, tx_len, rx_len))
+      if (const uint32_t id = l->JoyQueue(device, tx, tx_len, rx_len, kind, is_status, net_port, net_seq))
         return id;
     }
   }

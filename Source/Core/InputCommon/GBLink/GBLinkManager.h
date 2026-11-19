@@ -103,7 +103,13 @@ public:
   // goes on at once. JoyReady says whether the reply is in; JoyCollect returns it (the reply length,
   // -1 for none) and must be called once for every id, or the id given to JoyDiscard. Answered in
   // the order queued. Do not mix with JoyBegin while commands are queued.
-  uint32_t JoyQueue(int device, const uint8_t* tx, int tx_len, int rx_len);
+  //
+  // |kind| 0 is a command for the GBA. 1 and 2 are placeholders that keep the line's order for a
+  // command that is not sent: 1 is answered with the latest status the GBA gave, 2 with no reply.
+  // When |net_port| >= 0 the adapter thread gives the reply to the reply sink itself (as
+  // |net_seq| of that port) the moment it is in, before the caller can collect it.
+  uint32_t JoyQueue(int device, const uint8_t* tx, int tx_len, int rx_len, int kind = 0,
+                    bool is_status = false, int net_port = -1, uint32_t net_seq = 0);
   bool JoyReady(uint32_t id);
   int JoyCollect(uint32_t id, uint8_t* rx, double* usb_ms, int timeout_ms);
   void JoyDiscard(uint32_t id);
@@ -165,6 +171,10 @@ private:
     uint8_t tx[5] = {};
     int tx_len = 0, rx_len = 0;
     uint32_t id = 0;
+    int kind = 0;
+    bool is_status = false;
+    int net_port = -1;
+    uint32_t net_seq = 0;
   };
   struct JoyQueuedResult
   {
@@ -243,7 +253,10 @@ public:
   bool JoyBegin(int device, const uint8_t* tx, int tx_len, int rx_len);
   int JoyEnd(int device, uint8_t* rx, double* usb_ms);
   // Pipelined counterparts, see Link::JoyQueue.
-  uint32_t JoyQueue(int device, const uint8_t* tx, int tx_len, int rx_len);
+  uint32_t JoyQueue(int device, const uint8_t* tx, int tx_len, int rx_len, int kind = 0,
+                    bool is_status = false, int net_port = -1, uint32_t net_seq = 0);
+  // Where replies to commands queued with a net_port go (called on the adapter thread).
+  static void SetJoyReplySink(void (*send)(int port, uint32_t seq, int len, const uint8_t* data));
   bool JoyReady(int device, uint32_t id);
   int JoyCollect(int device, uint32_t id, uint8_t* rx, double* usb_ms, int timeout_ms);
   void JoyDiscard(int device, uint32_t id);

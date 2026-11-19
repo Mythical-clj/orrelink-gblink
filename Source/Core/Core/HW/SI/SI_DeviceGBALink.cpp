@@ -175,6 +175,9 @@ CSIDevice_GBALink::CSIDevice_GBALink(Core::System& system, SIDevices device, int
   JoyTrace::Get().Open(m_system.GetSystemTimers().GetTicksPerSecond());
 #ifdef ORRELINK_JOYBUS
   m_pipeline = Config::Get(Config::MAIN_GBLINK_JOY_PIPELINE);
+  // The adapter thread gives a netplay room the replies of this machine's GBA itself, in the
+  // order of its line, so that they do not wait for this machine's emulation to come round.
+  GBLink::Manager::SetJoyReplySink(&NetPlay::SendJoyReply);
 #endif
 }
 
@@ -186,7 +189,7 @@ CSIDevice_GBALink::~CSIDevice_GBALink()
 #ifdef ORRELINK_JOYBUS
   for (const Inflight& f : m_inflight)
   {
-    if (f.sent)
+    if (f.id != 0)
       GBLink::Manager::Get().JoyDiscard(f.device, f.id);
   }
 #endif
@@ -277,21 +280,15 @@ int CSIDevice_GBALink::RunBuffer(u8* buffer, int request_length)
           m_last_status_sent = std::chrono::steady_clock::now();
         }
         if (pipelined)
-        {
-          auto& manager = GBLink::Manager::Get();
-          m_cur_id = manager.JoyQueue(m_link_device, buffer, tx_len, m_rx_len);
-          if (m_cur_id == 0 && !m_inflight.empty())
-          {
-            // The adapter's line is full: wait for its oldest reply, then try again.
-            CollectOne();
-            m_cur_id = manager.JoyQueue(m_link_device, buffer, tx_len, m_rx_len);
-          }
-          m_started = m_cur_id != 0;
-        }
+          QueueCommand(buffer, tx_len, 0);
         else
-        {
           m_started = GBLink::Manager::Get().JoyBegin(m_link_device, buffer, tx_len, m_rx_len);
-        }
+      }
+      else if (pipelined)
+      {
+        // Not sent, but its reply keeps its place in the line: the latest status for an idle
+        // poll held back, no reply for a GBA that is not there.
+        QueueCommand(buffer, tx_len, m_held_status ? 1 : 2);
       }
     }
 #else
@@ -555,6 +552,26 @@ bool CSIDevice_GBALink::ShouldHoldStatus() const
   return true;
 }
 
+// Puts the command in the adapter's line (kind: see GBLink::Link::JoyQueue). The adapter thread
+// gives the room its reply the moment it is in.
+void CSIDevice_GBALink::QueueCommand(const u8* buffer, int tx_len, int kind)
+{
+  auto& manager = GBLink::Manager::Get();
+  const bool is_status = m_last_cmd == EBufferCommands::CMD_STATUS;
+  const int net_port = NetPlay::IsNetPlayRunning() ? m_device_number : -1;
+  const u32 net_seq = m_model_index + 1;
+  m_cur_id = manager.JoyQueue(m_link_device, buffer, tx_len, m_rx_len, kind, is_status, net_port,
+                              net_seq);
+  if (m_cur_id == 0 && !m_inflight.empty())
+  {
+    // The adapter's line is full: wait for its oldest reply, then try again.
+    CollectOne();
+    m_cur_id = manager.JoyQueue(m_link_device, buffer, tx_len, m_rx_len, kind, is_status,
+                                net_port, net_seq);
+  }
+  m_started = kind == 0 && m_cur_id != 0;
+}
+
 void CSIDevice_GBALink::CollectOne()
 {
   if (m_inflight.empty())
@@ -563,17 +580,27 @@ void CSIDevice_GBALink::CollectOne()
   m_inflight.pop_front();
   u8 rx[5] = {};
   int got = -1;
-  if (f.synthetic)
+  if (f.id != 0)
   {
-    got = 3;
-    std::copy(m_last_status.begin(), m_last_status.begin() + 3, rx);
-  }
-  else if (f.sent)
-  {
+    // (Already given to the room by the adapter thread.)
     double usb_ms = 0;
     got = GBLink::Manager::Get().JoyCollect(f.device, f.id, rx, &usb_ms, 2000);
-    m_stat_usb_ms += usb_ms;
-    m_stat_usb_max = std::max(m_stat_usb_max, usb_ms);
+    if (f.sent)
+    {
+      m_stat_usb_ms += usb_ms;
+      m_stat_usb_max = std::max(m_stat_usb_max, usb_ms);
+    }
+  }
+  else
+  {
+    // Not in the adapter's line (another port has the adapter): no reply, or the held status.
+    if (f.synthetic)
+    {
+      got = 3;
+      std::copy(m_last_status.begin(), m_last_status.begin() + 3, rx);
+    }
+    if (NetPlay::IsNetPlayRunning())
+      NetPlay::SendJoyReply(m_device_number, f.index + 1, got == f.rx_len ? got : -1, rx);
   }
   if (got != f.rx_len)
     got = -1;  // a short reply is no reply, on every machine
@@ -583,8 +610,6 @@ void CSIDevice_GBALink::CollectOne()
   real.len = static_cast<s8>(got);
   if (got > 0)
     std::copy(rx, rx + got, real.data.begin());
-  if (NetPlay::IsNetPlayRunning())
-    NetPlay::SendJoyReply(m_device_number, f.index + 1, got, rx);
   if (m_real.size() < f.index)
   {
     JoyBusLagModel::Reply none;
@@ -599,7 +624,7 @@ void CSIDevice_GBALink::CollectReady()
   while (!m_inflight.empty())
   {
     const Inflight& f = m_inflight.front();
-    if (f.sent && !GBLink::Manager::Get().JoyReady(f.device, f.id))
+    if (f.id != 0 && !GBLink::Manager::Get().JoyReady(f.device, f.id))
       break;
     CollectOne();
   }
@@ -617,6 +642,9 @@ void CSIDevice_GBALink::NoteAnswer(bool, bool, int, const u8*)
 bool CSIDevice_GBALink::ShouldHoldStatus() const
 {
   return false;
+}
+void CSIDevice_GBALink::QueueCommand(const u8*, int, int)
+{
 }
 void CSIDevice_GBALink::CollectOne()
 {

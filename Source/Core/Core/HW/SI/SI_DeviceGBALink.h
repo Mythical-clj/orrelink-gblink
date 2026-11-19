@@ -58,6 +58,7 @@ private:
     bool synthetic = false;  // an idle status held back: answered with the last real one
     bool is_status = false;
   };
+  void QueueCommand(const u8* buffer, int tx_len, int kind);
   void CollectOne();
   void CollectReady();
   void DrainInflight();
