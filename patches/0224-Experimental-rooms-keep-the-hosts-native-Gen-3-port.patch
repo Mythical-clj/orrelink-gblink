@@ -1,0 +1,284 @@
+From 27391b4b412e35e910d9ca8711dc5daf262e2a21 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 18 Nov 2026 18:04:38 -0600
+Subject: [PATCH] Experimental: rooms can keep the host's FireRed/LeafGreen or
+ Ruby/Sapphire port native
+
+With the launcher switch on, a hosted room shares the host's own native save with the PC boxes cleared instead of an Emerald rebuild, and a guest finds the room's ROM in the launcher's ROM folder. The guest's team still plays as Emerald. Off by default.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01764cASb9aVVk2m6JupRMj5
+---
+ Source/Core/Core/Config/MainSettings.cpp      |  1 +
+ Source/Core/Core/Config/MainSettings.h        |  1 +
+ .../Core/DolphinQt/NetPlay/NetPlayDialog.cpp  | 10 +++
+ .../DolphinQt/XDNetplay/XDLauncherDialog.cpp  | 12 +++
+ .../UICommon/XDNetplay/DisposableSave.cpp     | 77 +++++++++++++++++++
+ Source/Core/UICommon/XDNetplay/Gen3Save.cpp   |  2 +-
+ Source/Core/UICommon/XDNetplay/SaveImport.cpp | 33 ++++++++
+ Source/Core/UICommon/XDNetplay/SaveImport.h   |  8 ++
+ 8 files changed, 143 insertions(+), 1 deletion(-)
+
+diff --git a/Source/Core/Core/Config/MainSettings.cpp b/Source/Core/Core/Config/MainSettings.cpp
+index 0df186b6b..e3b4b3c7b 100644
+--- a/Source/Core/Core/Config/MainSettings.cpp
++++ b/Source/Core/Core/Config/MainSettings.cpp
+@@ -447,6 +447,7 @@ const Info<int> MAIN_XD_IMPORTED_GAME_3{{System::Main, "XDNetplay", "ImportedGam
+ const Info<std::string> MAIN_XD_ROM_EMERALD{{System::Main, "XDNetplay", "RomEmerald"}, ""};
+ const Info<std::string> MAIN_XD_ROM_FRLG{{System::Main, "XDNetplay", "RomFrlg"}, ""};
+ const Info<std::string> MAIN_XD_ROM_RS{{System::Main, "XDNetplay", "RomRs"}, ""};
++const Info<bool> MAIN_XD_NATIVE_ROOMS{{System::Main, "XDNetplay", "NativeRooms"}, false};
+ const Info<int> MAIN_XD_NATIVE_GAME_2{{System::Main, "XDNetplay", "NativeGame2"}, 0};
+ const Info<int> MAIN_XD_NATIVE_GAME_3{{System::Main, "XDNetplay", "NativeGame3"}, 0};
+ const Info<std::string> MAIN_XD_SUBMIT_TEAM_B64{{System::Main, "XDNetplay", "SubmitTeamB64"}, ""};
+diff --git a/Source/Core/Core/Config/MainSettings.h b/Source/Core/Core/Config/MainSettings.h
+index 37aa5a325..d281bbd63 100644
+--- a/Source/Core/Core/Config/MainSettings.h
++++ b/Source/Core/Core/Config/MainSettings.h
+@@ -304,6 +304,7 @@ extern const Info<int> MAIN_XD_IMPORTED_GAME_3;
+ extern const Info<std::string> MAIN_XD_ROM_EMERALD;
+ extern const Info<std::string> MAIN_XD_ROM_FRLG;
+ extern const Info<std::string> MAIN_XD_ROM_RS;
++extern const Info<bool> MAIN_XD_NATIVE_ROOMS;
+ extern const Info<int> MAIN_XD_NATIVE_GAME_2;
+ extern const Info<int> MAIN_XD_NATIVE_GAME_3;
+ 
+diff --git a/Source/Core/DolphinQt/NetPlay/NetPlayDialog.cpp b/Source/Core/DolphinQt/NetPlay/NetPlayDialog.cpp
+index cb6cd4f8c..73df7e78a 100644
+--- a/Source/Core/DolphinQt/NetPlay/NetPlayDialog.cpp
++++ b/Source/Core/DolphinQt/NetPlay/NetPlayDialog.cpp
+@@ -2575,6 +2575,16 @@ std::string NetPlayDialog::FindGBARomPath(const std::array<u8, 20>& hash, std::s
+         return rom_path;
+       }
+     }
++    // The launcher's own ROM folder (Emerald, FireRed, LeafGreen, Ruby, Sapphire), so a room that
++    // runs another Gen 3 game finds it without asking.
++    for (const std::string& library_path : XDNetplay::SaveImport::LibraryRomFiles())
++    {
++      if (HW::GBA::Core::GetRomInfo(library_path.c_str(), rom_hash, rom_title) &&
++          rom_hash == hash && rom_title == title)
++      {
++        return library_path;
++      }
++    }
+     while (!(rom_path = GameCubePane::GetOpenGBARom(title)).empty())
+     {
+       if (HW::GBA::Core::GetRomInfo(rom_path.c_str(), rom_hash, rom_title))
+diff --git a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
+index 01c559911..2cbf3d046 100644
+--- a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
++++ b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
+@@ -569,6 +569,18 @@ void XDLauncherDialog::CreateMainLayout()
+         tr("With a ROM here, importing a save from that game plays it natively. Without one the "
+            "save is rebuilt as Emerald."));
+     mgba_layout->addWidget(roms_box);
++    auto* native_rooms_check = new QCheckBox(tr("Experimental: play these games in rooms"));
++    native_rooms_check->setChecked(Config::Get(Config::MAIN_XD_NATIVE_ROOMS));
++    native_rooms_check->setToolTip(
++        tr("A hosted room keeps your FireRed/LeafGreen or Ruby/Sapphire port on its own game "
++           "instead of rebuilding it as Emerald. Your PC boxes are cleared in the copy that is "
++           "shared. Everyone in the room needs the same ROMs, and the guest's team still plays "
++           "as Emerald. Off by default."));
++    connect(native_rooms_check, &QCheckBox::toggled, this, [](bool on) {
++      Config::SetBaseOrCurrent(Config::MAIN_XD_NATIVE_ROOMS, on);
++      Config::Save();
++    });
++    mgba_layout->addWidget(native_rooms_check);
+   }
+   m_gblink_joybus_check = new QCheckBox(tr("Real GBA"));
+   m_gblink_joybus_check->setChecked(Config::Get(Config::MAIN_GBLINK_JOYBUS));
+diff --git a/Source/Core/UICommon/XDNetplay/DisposableSave.cpp b/Source/Core/UICommon/XDNetplay/DisposableSave.cpp
+index 69cf0dffa..d0099a8f5 100644
+--- a/Source/Core/UICommon/XDNetplay/DisposableSave.cpp
++++ b/Source/Core/UICommon/XDNetplay/DisposableSave.cpp
+@@ -5,6 +5,7 @@
+ 
+ #include "UICommon/XDNetplay/BattleCustomizer.h"
+ 
++#include <algorithm>
+ #include <atomic>
+ #include <mutex>
+ #include <optional>
+@@ -29,6 +30,7 @@
+ 
+ #include "UICommon/XDNetplay/Gen3Save.h"
+ #include "UICommon/XDNetplay/PartyBundle.h"
++#include "UICommon/XDNetplay/SaveImport.h"
+ #include "UICommon/XDNetplay/TeamInjector.h"
+ 
+ namespace XDNetplay::DisposableSave
+@@ -167,6 +169,72 @@ void RunPendingRestore()
+   RestoreNow(2);
+ }
+ 
++// A room save for a port that stays native (FireRed/LeafGreen or Ruby/Sapphire): the player's own
++// save of that game with every PC box cleared, so the boxes never leave their machine. The trainer,
++// party, bag and progress stay, because the game itself needs them. The older block is replaced by a
++// copy of the active one (one save older), so no earlier save survives in the file.
++std::optional<EmeraldSave> BuildNativeRoomSave(const EmeraldSave& save, Gen3Game game,
++                                               std::string* error)
++{
++  constexpr size_t SECTION = EmeraldSave::SECTION_SIZE;
++  constexpr size_t BLOCK = EmeraldSave::BLOCK_SIZE;
++  constexpr size_t FOOTER = EmeraldSave::SECTION_FOOTER_OFFSET;
++  const std::vector<u8>& raw = save.ToBytes();
++  if (raw.size() < 2 * BLOCK)
++  {
++    if (error)
++      *error = "the native save is too small";
++    return std::nullopt;
++  }
++
++  const int active = save.GetActiveBlock();
++  const auto& lengths = EmeraldSave::SectionDataLengths(game);
++  std::vector<u8> out(raw);
++  std::copy(raw.begin() + active * BLOCK, raw.begin() + (active + 1) * BLOCK,
++            out.begin() + (1 - active) * BLOCK);
++
++  const auto read16 = [&out](size_t at) { return u32{out[at]} | (u32{out[at + 1]} << 8); };
++  const auto read32 = [&out](size_t at) {
++    return u32{out[at]} | (u32{out[at + 1]} << 8) | (u32{out[at + 2]} << 16) |
++           (u32{out[at + 3]} << 24);
++  };
++  for (const int block : {active, 1 - active})
++  {
++    for (size_t slot = 0; slot < EmeraldSave::SECTIONS_PER_BLOCK; ++slot)
++    {
++      const size_t base = static_cast<size_t>(block) * BLOCK + slot * SECTION;
++      const u32 id = read16(base + FOOTER);
++      if (id >= 5 && id <= 13)
++      {
++        std::fill(out.begin() + base, out.begin() + base + FOOTER, u8{0});
++        const u32 sum = EmeraldSave::SectionChecksum(out.data(), base, lengths[id]);
++        out[base + FOOTER + 2] = static_cast<u8>(sum & 0xFF);
++        out[base + FOOTER + 3] = static_cast<u8>(sum >> 8);
++      }
++      if (block != active)
++      {
++        const u32 index = read32(base + FOOTER + 8);
++        if (index > 0)
++        {
++          const u32 older = index - 1;
++          for (int i = 0; i < 4; ++i)
++            out[base + FOOTER + 8 + i] = static_cast<u8>(older >> (8 * i));
++        }
++      }
++    }
++  }
++
++  std::string parse_error;
++  auto room_save = EmeraldSave::Create(std::move(out), &parse_error);
++  if (!room_save)
++  {
++    if (error)
++      *error = "the room save for this game could not be built (" + parse_error + ")";
++    return std::nullopt;
++  }
++  return room_save;
++}
++
+ // Build the disposable image for one imported port from `source_bytes` (the
+ // imported save). Returns std::nullopt with *error on any failure; the FRLG
+ // case gets a hosting-specific message (Extract's own text explains submission,
+@@ -186,6 +254,15 @@ std::optional<EmeraldSave> BuildDisposable(int device, std::vector<u8> source_by
+     return fail(fmt::format("the imported save on GBA port {} is unreadable ({})", device + 1,
+                             parse_error));
+ 
++  // Experimental native rooms: the host's own port keeps its game, so the room save is that game's
++  // save with the boxes cleared and not an Emerald rebuild.
++  if (device == 1 && SaveImport::NativeRoomsEnabled())
++  {
++    const Gen3Game game = EmeraldSave::DetectGame(*imported);
++    if (game != Gen3Game::Emerald && SaveImport::NativeGameForDevice(device) == game)
++      return BuildNativeRoomSave(*imported, game, error);
++  }
++
+   // Mirror of the FRLG submission refusal, for the mirror-image reason: the
+   // party-bundle extractor cannot read a FireRed/LeafGreen save (its party
+   // lives at different section offsets), so no disposable can be built -- and
+diff --git a/Source/Core/UICommon/XDNetplay/Gen3Save.cpp b/Source/Core/UICommon/XDNetplay/Gen3Save.cpp
+index 554b52f3f..9ae80dbd6 100644
+--- a/Source/Core/UICommon/XDNetplay/Gen3Save.cpp
++++ b/Source/Core/UICommon/XDNetplay/Gen3Save.cpp
+@@ -446,7 +446,7 @@ bool VerifiedWriteSaveFile(const std::string& path, const EmeraldSave& save, std
+       *error = "edited save does not re-parse: " + parse_error;
+     return false;
+   }
+-  if (!reparsed->VerifyAllChecksums().empty())
++  if (!reparsed->VerifyAllChecksums(EmeraldSave::DetectGame(*reparsed)).empty())
+   {
+     if (error)
+       *error = "edited save has checksum mismatches";
+diff --git a/Source/Core/UICommon/XDNetplay/SaveImport.cpp b/Source/Core/UICommon/XDNetplay/SaveImport.cpp
+index 37b3997f2..690c0a3fc 100644
+--- a/Source/Core/UICommon/XDNetplay/SaveImport.cpp
++++ b/Source/Core/UICommon/XDNetplay/SaveImport.cpp
+@@ -773,6 +773,34 @@ bool AddLibraryRom(const std::string& source_path, Gen3Game* game_out, std::stri
+ #endif
+ }
+ 
++std::vector<std::string> LibraryRomFiles()
++{
++  std::vector<std::string> files;
++#ifdef HAS_LIBMGBA
++  const auto add = [&files](const std::string& path) {
++    if (path.empty() || !File::Exists(path))
++      return;
++    for (const std::string& known : files)
++    {
++      if (known == path)
++        return;
++    }
++    files.push_back(path);
++  };
++  add(Config::Get(Config::MAIN_XD_ROM_EMERALD));
++  add(Config::Get(Config::MAIN_XD_ROM_FRLG));
++  add(Config::Get(Config::MAIN_XD_ROM_RS));
++  for (const char* name : {"EMERALD.gba", "FIRERED.gba", "LEAFGREEN.gba", "RUBY.gba", "SAPPHIRE.gba"})
++    add(File::GetUserPath(D_GBAUSER_IDX) + name);
++#endif
++  return files;
++}
++
++bool NativeRoomsEnabled()
++{
++  return Config::Get(Config::MAIN_XD_NATIVE_ROOMS);
++}
++
+ Gen3Game NativeGameForDevice(int device)
+ {
+ #ifndef HAS_LIBMGBA
+@@ -823,6 +851,11 @@ bool PrepareNativePortsForRoom(std::string* error)
+   {
+     if (NativeGameForDevice(device) == Gen3Game::Emerald)
+       continue;
++    // Experimental: the host's own port keeps its game. DisposableSave then shares a stripped
++    // save of that game instead of an Emerald rebuild. Port 3 is where a guest's team is
++    // written, which only an Emerald save takes.
++    if (device == 1 && NativeRoomsEnabled())
++      continue;
+     // Read the native save through the port's own ROM, then rebuild it as Emerald.
+     const std::string native_path = SavePathForDevice(device);
+     if (native_path.empty() || !File::Exists(native_path))
+diff --git a/Source/Core/UICommon/XDNetplay/SaveImport.h b/Source/Core/UICommon/XDNetplay/SaveImport.h
+index 68765823b..ecd114fa5 100644
+--- a/Source/Core/UICommon/XDNetplay/SaveImport.h
++++ b/Source/Core/UICommon/XDNetplay/SaveImport.h
+@@ -121,6 +121,14 @@ bool AddLibraryRom(const std::string& source_path, Gen3Game* game_out, std::stri
+ // another game was imported and its ROM is available.
+ Gen3Game NativeGameForDevice(int device);
+ 
++// Every Gen 3 ROM the launcher holds (Emerald, FireRed, LeafGreen, Ruby, Sapphire), for matching the
++// ROM a room asks for by hash.
++std::vector<std::string> LibraryRomFiles();
++
++// Experimental: a hosted room keeps the host's own FireRed/LeafGreen or Ruby/Sapphire port native.
++// Everyone in the room then needs that ROM.
++bool NativeRoomsEnabled();
++
+ // Point ports 0-3 at the right ROM: Emerald everywhere, except sockets 1 and 2 when they hold a
+ // native save. |all_emerald| (a Multi battle) forces Emerald on every port.
+ void ApplyPortRoms(bool all_emerald);
+-- 
+2.43.0
+
