@@ -222,6 +222,79 @@ int Link::JoyEnd(uint8_t* rx, double* usb_ms)
   return m_joy.got;
 }
 
+uint32_t Link::JoyQueue(int device, const uint8_t* tx, int tx_len, int rx_len)
+{
+  if (!m_joy_ready || tx_len < 1 || tx_len > 5 || rx_len < 1 || rx_len > 5)
+    return 0;
+  int expected = -1;
+  m_joy_device.compare_exchange_strong(expected, device);
+  if (m_joy_device != device)
+    return 0;  // this adapter's GBA is already another port's
+  uint32_t id;
+  {
+    std::lock_guard lock(m_mutex);
+    constexpr size_t MAX_QUEUED = 64;
+    if (m_joy.pending || m_joyq.size() >= MAX_QUEUED)
+      return 0;
+    id = ++m_joyq_next_id;
+    if (id == 0)
+      id = ++m_joyq_next_id;
+    JoyQueued q;
+    std::copy(tx, tx + tx_len, q.tx);
+    q.tx_len = tx_len;
+    q.rx_len = rx_len;
+    q.id = id;
+    m_joyq.push_back(q);
+  }
+  m_cv.notify_all();
+  return id;
+}
+
+bool Link::JoyReady(uint32_t id)
+{
+  std::lock_guard lock(m_mutex);
+  return m_joyq_done.count(id) != 0;
+}
+
+int Link::JoyCollect(uint32_t id, uint8_t* rx, double* usb_ms, int timeout_ms)
+{
+  std::unique_lock lock(m_mutex);
+  m_joy_cv.wait_for(lock, std::chrono::milliseconds(timeout_ms),
+                    [this, id] { return m_joyq_done.count(id) != 0; });
+  const auto it = m_joyq_done.find(id);
+  if (it == m_joyq_done.end())
+  {
+    // Not answered in time: out of the line if it never started, else dropped when it finishes.
+    const auto queued = std::find_if(m_joyq.begin(), m_joyq.end(),
+                                     [id](const JoyQueued& q) { return q.id == id; });
+    if (queued != m_joyq.end())
+      m_joyq.erase(queued);
+    else
+      m_joyq_abandoned.insert(id);
+    return -1;
+  }
+  const JoyQueuedResult result = it->second;
+  m_joyq_done.erase(it);
+  if (usb_ms)
+    *usb_ms = result.usb_ms;
+  if (result.got > 0)
+    std::copy(result.rx, result.rx + result.got, rx);
+  return result.got;
+}
+
+void Link::JoyDiscard(uint32_t id)
+{
+  std::lock_guard lock(m_mutex);
+  if (m_joyq_done.erase(id) != 0)
+    return;
+  const auto queued = std::find_if(m_joyq.begin(), m_joyq.end(),
+                                   [id](const JoyQueued& q) { return q.id == id; });
+  if (queued != m_joyq.end())
+    m_joyq.erase(queued);
+  else
+    m_joyq_abandoned.insert(id);
+}
+
 void Link::RunJoybus(UsbLink& usb)
 {
   const auto quitting = [this] {
@@ -328,11 +401,12 @@ void Link::RunJoybus(UsbLink& usb)
   {
     JoyRequest req;
     bool have = false;
+    bool queued = false;  // req came from the pipelined line, not the single slot
     std::unique_ptr<DumpRequest> dump;
     {
       std::unique_lock lock(m_mutex);
       m_cv.wait_for(lock, std::chrono::milliseconds(200),
-                    [this] { return m_quit || m_joy.pending || m_dump; });
+                    [this] { return m_quit || m_joy.pending || m_dump || !m_joyq.empty(); });
       if (m_quit)
         break;
       dump = std::move(m_dump);
@@ -340,6 +414,18 @@ void Link::RunJoybus(UsbLink& usb)
       {
         req = m_joy;
         have = true;
+      }
+      else if (!m_joyq.empty())
+      {
+        const JoyQueued& q = m_joyq.front();
+        req = JoyRequest{};
+        std::copy(q.tx, q.tx + q.tx_len, req.tx);
+        req.tx_len = q.tx_len;
+        req.rx_len = q.rx_len;
+        req.id = q.id;
+        queued = true;
+        have = true;
+        m_joyq.pop_front();
       }
     }
     if (dump)
@@ -360,7 +446,18 @@ void Link::RunJoybus(UsbLink& usb)
       const double ms = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
       {
         std::lock_guard lock(m_mutex);
-        if (m_joy.pending && m_joy.id == req.id)  // (not given up on meanwhile)
+        if (queued)
+        {
+          if (m_joyq_abandoned.erase(req.id) == 0)
+          {
+            JoyQueuedResult result;
+            std::copy(req.rx, req.rx + 5, result.rx);
+            result.got = got;
+            result.usb_ms = ms;
+            m_joyq_done[req.id] = result;
+          }
+        }
+        else if (m_joy.pending && m_joy.id == req.id)  // (not given up on meanwhile)
         {
           std::copy(req.rx, req.rx + 5, m_joy.rx);
           m_joy.got = got;
@@ -422,6 +519,9 @@ void Link::RunJoybus(UsbLink& usb)
       m_joy.got = -1;
       m_joy.done = true;
     }
+    for (const JoyQueued& q : m_joyq)
+      m_joyq_done[q.id] = JoyQueuedResult{};
+    m_joyq.clear();
   }
   m_joy_cv.notify_all();
   m_joy_device = -1;
@@ -1158,6 +1258,63 @@ bool Manager::JoyBegin(int device, const uint8_t* tx, int tx_len, int rx_len)
       return true;
   }
   return false;
+}
+
+uint32_t Manager::JoyQueue(int device, const uint8_t* tx, int tx_len, int rx_len)
+{
+  for (const auto& slot : m_links)
+  {
+    Link* l = slot.load();
+    if (l && l->JoyDevice() == device)
+      return l->JoyQueue(device, tx, tx_len, rx_len);
+  }
+  if (Link* l = LinkFor(device))
+  {
+    if (const uint32_t id = l->JoyQueue(device, tx, tx_len, rx_len))
+      return id;
+  }
+  for (const auto& slot : m_links)
+  {
+    Link* l = slot.load();
+    if (l)
+    {
+      if (const uint32_t id = l->JoyQueue(device, tx, tx_len, rx_len))
+        return id;
+    }
+  }
+  return 0;
+}
+
+bool Manager::JoyReady(int device, uint32_t id)
+{
+  for (const auto& slot : m_links)
+  {
+    Link* l = slot.load();
+    if (l && l->JoyDevice() == device)
+      return l->JoyReady(id);
+  }
+  return true;  // no adapter holds it: nothing to wait for
+}
+
+int Manager::JoyCollect(int device, uint32_t id, uint8_t* rx, double* usb_ms, int timeout_ms)
+{
+  for (const auto& slot : m_links)
+  {
+    Link* l = slot.load();
+    if (l && l->JoyDevice() == device)
+      return l->JoyCollect(id, rx, usb_ms, timeout_ms);
+  }
+  return -1;
+}
+
+void Manager::JoyDiscard(int device, uint32_t id)
+{
+  for (const auto& slot : m_links)
+  {
+    Link* l = slot.load();
+    if (l && l->JoyDevice() == device)
+      l->JoyDiscard(id);
+  }
 }
 
 int Manager::JoyEnd(int device, uint8_t* rx, double* usb_ms)

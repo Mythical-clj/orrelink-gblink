@@ -14,6 +14,9 @@
 #include <atomic>
 #include <array>
 #include <condition_variable>
+#include <deque>
+#include <unordered_map>
+#include <unordered_set>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -95,6 +98,15 @@ public:
   // adapter); JoyEnd waits for its reply and returns the reply length, or -1 for no reply.
   bool JoyBegin(int device, const uint8_t* tx, int tx_len, int rx_len);
   int JoyEnd(uint8_t* rx, double* usb_ms);
+  // Pipelined commands (a netplay room's owner): JoyQueue puts a command in line behind the ones
+  // already waiting for the adapter and returns its id (0: refused, the line is full); the caller
+  // goes on at once. JoyReady says whether the reply is in; JoyCollect returns it (the reply length,
+  // -1 for none) and must be called once for every id, or the id given to JoyDiscard. Answered in
+  // the order queued. Do not mix with JoyBegin while commands are queued.
+  uint32_t JoyQueue(int device, const uint8_t* tx, int tx_len, int rx_len);
+  bool JoyReady(uint32_t id);
+  int JoyCollect(uint32_t id, uint8_t* rx, double* usb_ms, int timeout_ms);
+  void JoyDiscard(uint32_t id);
   // The port this adapter's GBA serves in JOY Bus mode, -1 while none has asked.
   int JoyDevice() const { return m_joy_device; }
   bool IsJoyReady() const { return m_joy_ready; }
@@ -148,6 +160,22 @@ private:
     uint32_t id = 0;
   };
   JoyRequest m_joy;  // guarded by m_mutex
+  struct JoyQueued
+  {
+    uint8_t tx[5] = {};
+    int tx_len = 0, rx_len = 0;
+    uint32_t id = 0;
+  };
+  struct JoyQueuedResult
+  {
+    uint8_t rx[5] = {};
+    int got = -1;
+    double usb_ms = 0;
+  };
+  std::deque<JoyQueued> m_joyq;                          // waiting for the adapter thread
+  std::unordered_map<uint32_t, JoyQueuedResult> m_joyq_done;  // answered, not yet collected
+  std::unordered_set<uint32_t> m_joyq_abandoned;         // given up on while on the adapter
+  uint32_t m_joyq_next_id = 0;                           // all guarded by m_mutex
   uint32_t m_joy_next_id = 0;
   std::condition_variable m_joy_cv;
   std::atomic<bool> m_joy_ready{false};
@@ -214,6 +242,11 @@ public:
   int JoyReadyCount() const;
   bool JoyBegin(int device, const uint8_t* tx, int tx_len, int rx_len);
   int JoyEnd(int device, uint8_t* rx, double* usb_ms);
+  // Pipelined counterparts, see Link::JoyQueue.
+  uint32_t JoyQueue(int device, const uint8_t* tx, int tx_len, int rx_len);
+  bool JoyReady(int device, uint32_t id);
+  int JoyCollect(int device, uint32_t id, uint8_t* rx, double* usb_ms, int timeout_ms);
+  void JoyDiscard(int device, uint32_t id);
   // A line in GBLink.log.
   void Log(const std::string& line) const;
 

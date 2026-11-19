@@ -5,6 +5,7 @@
 
 #include <array>
 #include <chrono>
+#include <deque>
 #include <memory>
 #include <vector>
 
@@ -42,6 +43,41 @@ private:
   };
 
   void LogStats();
+
+  // A real GBA's replies, in order. In a room the owner does not wait for each reply: the command
+  // goes into the adapter's line and the game goes on, since the lag model only needs a real reply
+  // when it is a lag old (or when it has to wait for it). Replies are collected, and sent on to the
+  // room, in the order of the commands.
+  struct Inflight
+  {
+    u32 index = 0;  // model index
+    u32 id = 0;     // the adapter's id for it
+    int device = 0;
+    int rx_len = 0;
+    bool sent = false;       // went to the adapter
+    bool synthetic = false;  // an idle status held back: answered with the last real one
+    bool is_status = false;
+  };
+  void CollectOne();
+  void CollectReady();
+  void DrainInflight();
+  // Bookkeeping for a command the adapter answered (or did not): the GBA being absent, and the
+  // run of identical idle status replies.
+  void NoteAnswer(bool sent, bool is_status, int got, const u8* rx);
+  bool ShouldHoldStatus() const;
+
+  std::deque<Inflight> m_inflight;
+  bool m_pipeline = false;  // MAIN_GBLINK_JOY_PIPELINE, read when the device is created
+  u32 m_cur_id = 0;
+  bool m_held_status = false;  // this command's status was not sent
+  // Idle polling: the game asks a waiting GBA for its status over and over. Once that has said the
+  // same thing three times running, three polls in four are answered with it without bothering the
+  // GBA, and no more than 25 ms passes without a real one.
+  u32 m_idle_status_run = 0;
+  u32 m_held_in_row = 0;
+  std::array<u8, 5> m_last_status{};
+  std::chrono::steady_clock::time_point m_last_status_sent{};
+  u32 m_stat_held = 0;
 
   NextAction m_next_action = NextAction::SendCommand;
   EBufferCommands m_last_cmd = EBufferCommands::CMD_STATUS;

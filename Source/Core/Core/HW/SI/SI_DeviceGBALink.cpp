@@ -168,10 +168,21 @@ CSIDevice_GBALink::CSIDevice_GBALink(Core::System& system, SIDevices device, int
   JoyLog(fmt::format("joybus port {}: real GBA device created{}", m_device_number + 1,
                      NetPlay::IsNetPlayRunning() ? " (netplay)" : ""));
   JoyTrace::Get().Open(m_system.GetSystemTimers().GetTicksPerSecond());
+#ifdef ORRELINK_JOYBUS
+  m_pipeline = Config::Get(Config::MAIN_GBLINK_JOY_PIPELINE);
+#endif
 }
 
 CSIDevice_GBALink::~CSIDevice_GBALink()
 {
+#ifdef ORRELINK_JOYBUS
+  for (const Inflight& f : m_inflight)
+  {
+    if (f.sent)
+      GBLink::Manager::Get().JoyDiscard(f.device, f.id);
+  }
+#endif
+  m_inflight.clear();
   LogStats();
   JoyTrace::Get().Close();
 #ifdef ANDROID
@@ -230,10 +241,20 @@ int CSIDevice_GBALink::RunBuffer(u8* buffer, int request_length)
           (u32{buffer[1]} << 24) | (u32{buffer[2]} << 16) | (u32{buffer[3]} << 8) | buffer[4]);
     }
 #ifdef ORRELINK_JOYBUS
+    m_held_status = false;
+    m_cur_id = 0;
     if (m_owner == 1 && m_link_device >= 0)
     {
+      const bool pipelined = m_pipeline && m_model;
       bool send = true;
-      if (m_gba_absent)
+      if (m_last_cmd == EBufferCommands::CMD_STATUS && m_pipeline && ShouldHoldStatus())
+      {
+        send = false;
+        m_held_status = true;
+        m_held_in_row++;
+        m_stat_held++;
+      }
+      else if (m_gba_absent)
       {
         const auto now = std::chrono::steady_clock::now();
         send = now - m_last_probe >= std::chrono::milliseconds(250);
@@ -241,7 +262,29 @@ int CSIDevice_GBALink::RunBuffer(u8* buffer, int request_length)
           m_last_probe = now;
       }
       if (send)
-        m_started = GBLink::Manager::Get().JoyBegin(m_link_device, buffer, tx_len, m_rx_len);
+      {
+        if (m_last_cmd == EBufferCommands::CMD_STATUS)
+        {
+          m_held_in_row = 0;
+          m_last_status_sent = std::chrono::steady_clock::now();
+        }
+        if (pipelined)
+        {
+          auto& manager = GBLink::Manager::Get();
+          m_cur_id = manager.JoyQueue(m_link_device, buffer, tx_len, m_rx_len);
+          if (m_cur_id == 0 && !m_inflight.empty())
+          {
+            // The adapter's line is full: wait for its oldest reply, then try again.
+            CollectOne();
+            m_cur_id = manager.JoyQueue(m_link_device, buffer, tx_len, m_rx_len);
+          }
+          m_started = m_cur_id != 0;
+        }
+        else
+        {
+          m_started = GBLink::Manager::Get().JoyBegin(m_link_device, buffer, tx_len, m_rx_len);
+        }
+      }
     }
 #else
     (void)tx_len;
@@ -274,7 +317,27 @@ int CSIDevice_GBALink::RunBuffer(u8* buffer, int request_length)
     int got = -1;
     // The GBA's own answer, on the machine it is plugged into.
     JoyBusLagModel::Reply real;
-    if (m_owner == 1)
+#ifdef ORRELINK_JOYBUS
+    // Commands still in the adapter's line when this port stops being pipelined are answered first.
+    const bool pipelined = m_pipeline && m_model && m_owner == 1;
+    if (!pipelined && !m_inflight.empty())
+      DrainInflight();
+    if (pipelined)
+    {
+      Inflight f;
+      f.index = m_model_index;
+      f.id = m_cur_id;
+      f.device = m_link_device;
+      f.rx_len = m_rx_len;
+      f.sent = m_started;
+      f.synthetic = m_held_status;
+      f.is_status = m_last_cmd == EBufferCommands::CMD_STATUS;
+      m_inflight.push_back(f);
+    }
+#else
+    const bool pipelined = false;
+#endif
+    if (m_owner == 1 && !pipelined)
     {
 #ifdef ORRELINK_JOYBUS
       if (m_started)
@@ -284,29 +347,17 @@ int CSIDevice_GBALink::RunBuffer(u8* buffer, int request_length)
         m_stat_usb_ms += usb_ms;
         m_stat_usb_max = std::max(m_stat_usb_max, usb_ms);
       }
+      else if (m_held_status)
+      {
+        got = 3;
+        std::copy(m_last_status.begin(), m_last_status.begin() + 3, rx);
+      }
 #endif
       if (got != m_rx_len)
         got = -1;  // a short reply is no reply, on every machine
 #ifdef ORRELINK_JOYBUS
-      if (m_started)
-      {
-        const auto now = std::chrono::steady_clock::now();
-        if (got > 0)
-        {
-          if (m_gba_absent)
-            JoyLog(fmt::format("joybus port {}: a GBA is answering again", m_device_number + 1));
-          m_gba_absent = false;
-          m_silent_streak = 0;
-          m_last_answer = now;
-        }
-        else if (++m_silent_streak >= 4 && !m_gba_absent &&
-                 now - m_last_answer >= std::chrono::milliseconds(150))
-        {
-          m_gba_absent = true;
-          JoyLog(fmt::format("joybus port {}: no GBA answering, probing every 250 ms",
-                             m_device_number + 1));
-        }
-      }
+      if (!m_held_status)
+        NoteAnswer(m_started, m_last_cmd == EBufferCommands::CMD_STATUS, got, rx);
 #endif
       real.len = static_cast<s8>(got);
       if (got > 0)
@@ -321,13 +372,17 @@ int CSIDevice_GBALink::RunBuffer(u8* buffer, int request_length)
     std::string note;
     if (m_model)
     {
-      if (m_owner == 1)
+      if (m_owner == 1 && !pipelined)
         m_real.push_back(real);
       const auto fetch = [this](u32 index) {
         JoyBusLagModel::Reply r;
         r.len = -1;
         if (m_owner == 1)
+        {
+          while (index >= m_real.size() && !m_inflight.empty())
+            CollectOne();
           return index < m_real.size() ? m_real[index] : r;
+        }
         if (m_owner != 2)
           return r;
         const auto t0 = std::chrono::steady_clock::now();
@@ -352,6 +407,13 @@ int CSIDevice_GBALink::RunBuffer(u8* buffer, int request_length)
       JoyBusLagModel::How how = JoyBusLagModel::How::Waited;
       const JoyBusLagModel::Reply heard = m_model->Decide(m_model_index, fetch, &how);
       m_stat_how[static_cast<size_t>(how)]++;
+      if (pipelined)
+      {
+        // Replies that are in go on to the room now; a line that has grown long is waited down.
+        CollectReady();
+        while (m_inflight.size() > 48)
+          CollectOne();
+      }
       got = heard.len > 0 ? heard.len : -1;
       std::fill(std::begin(rx), std::end(rx), u8{0});
       if (got > 0)
@@ -359,7 +421,7 @@ int CSIDevice_GBALink::RunBuffer(u8* buffer, int request_length)
       if (how != JoyBusLagModel::How::Waited)
       {
         note = how == JoyBusLagModel::How::Lagged ? " l" : " p";
-        if (m_owner == 1 && !(real == heard))
+        if (m_owner == 1 && !pipelined && !(real == heard))
         {
           note += " real=";
           if (real.len <= 0)
@@ -419,6 +481,137 @@ int CSIDevice_GBALink::RunBuffer(u8* buffer, int request_length)
   return 0;
 }
 
+#ifdef ORRELINK_JOYBUS
+void CSIDevice_GBALink::NoteAnswer(bool sent, bool is_status, int got, const u8* rx)
+{
+  if (sent)
+  {
+    const auto now = std::chrono::steady_clock::now();
+    if (got > 0)
+    {
+      if (m_gba_absent)
+        JoyLog(fmt::format("joybus port {}: a GBA is answering again", m_device_number + 1));
+      m_gba_absent = false;
+      m_silent_streak = 0;
+      m_last_answer = now;
+    }
+    else if (++m_silent_streak >= 4 && !m_gba_absent &&
+             now - m_last_answer >= std::chrono::milliseconds(150))
+    {
+      m_gba_absent = true;
+      JoyLog(fmt::format("joybus port {}: no GBA answering, probing every 250 ms",
+                         m_device_number + 1));
+    }
+  }
+  if (!is_status || got != 3)
+  {
+    m_idle_status_run = 0;
+  }
+  else if (sent)
+  {
+    if (m_idle_status_run > 0 && std::equal(rx, rx + 3, m_last_status.begin()))
+    {
+      m_idle_status_run++;
+    }
+    else
+    {
+      m_idle_status_run = 1;
+      std::copy(rx, rx + 3, m_last_status.begin());
+    }
+  }
+}
+
+bool CSIDevice_GBALink::ShouldHoldStatus() const
+{
+  if (m_idle_status_run < 3 || m_held_in_row >= 3 || m_gba_absent)
+    return false;
+  if (std::chrono::steady_clock::now() - m_last_status_sent >= std::chrono::milliseconds(25))
+    return false;
+  for (const Inflight& f : m_inflight)
+  {
+    if (!f.is_status)
+      return false;  // something else is on its way to the GBA: its status is not idle
+  }
+  return true;
+}
+
+void CSIDevice_GBALink::CollectOne()
+{
+  if (m_inflight.empty())
+    return;
+  const Inflight f = m_inflight.front();
+  m_inflight.pop_front();
+  u8 rx[5] = {};
+  int got = -1;
+  if (f.synthetic)
+  {
+    got = 3;
+    std::copy(m_last_status.begin(), m_last_status.begin() + 3, rx);
+  }
+  else if (f.sent)
+  {
+    double usb_ms = 0;
+    got = GBLink::Manager::Get().JoyCollect(f.device, f.id, rx, &usb_ms, 2000);
+    m_stat_usb_ms += usb_ms;
+    m_stat_usb_max = std::max(m_stat_usb_max, usb_ms);
+  }
+  if (got != f.rx_len)
+    got = -1;  // a short reply is no reply, on every machine
+  if (!f.synthetic)
+    NoteAnswer(f.sent, f.is_status, got, rx);
+  JoyBusLagModel::Reply real;
+  real.len = static_cast<s8>(got);
+  if (got > 0)
+    std::copy(rx, rx + got, real.data.begin());
+  if (NetPlay::IsNetPlayRunning())
+    NetPlay::SendJoyReply(m_device_number, f.index + 1, got, rx);
+  if (m_real.size() < f.index)
+  {
+    JoyBusLagModel::Reply none;
+    none.len = -1;
+    m_real.resize(f.index, none);
+  }
+  m_real.push_back(real);
+}
+
+void CSIDevice_GBALink::CollectReady()
+{
+  while (!m_inflight.empty())
+  {
+    const Inflight& f = m_inflight.front();
+    if (f.sent && !GBLink::Manager::Get().JoyReady(f.device, f.id))
+      break;
+    CollectOne();
+  }
+}
+
+void CSIDevice_GBALink::DrainInflight()
+{
+  while (!m_inflight.empty())
+    CollectOne();
+}
+#else
+void CSIDevice_GBALink::NoteAnswer(bool, bool, int, const u8*)
+{
+}
+bool CSIDevice_GBALink::ShouldHoldStatus() const
+{
+  return false;
+}
+void CSIDevice_GBALink::CollectOne()
+{
+  m_inflight.clear();
+}
+void CSIDevice_GBALink::CollectReady()
+{
+  m_inflight.clear();
+}
+void CSIDevice_GBALink::DrainInflight()
+{
+  m_inflight.clear();
+}
+#endif
+
 void CSIDevice_GBALink::LogStats()
 {
   const u32 total = m_stat_status + m_stat_read + m_stat_write;
@@ -447,12 +640,17 @@ void CSIDevice_GBALink::LogStats()
     {
       line += fmt::format(", adapter {:.2f} ms each (max {:.2f}), {:.0f} ms per second",
                           m_stat_usb_ms / total, m_stat_usb_max, m_stat_usb_ms / seconds);
+      if (m_pipeline && m_model)
+        line += " (not waited for)";
     }
+    if (m_stat_held > 0)
+      line += fmt::format(", {} idle status polls not sent", m_stat_held);
     JoyLog(line);
   }
   m_stat_status = m_stat_read = m_stat_write = m_stat_none = m_stat_net_waits = 0;
   m_stat_usb_ms = m_stat_usb_max = m_stat_net_ms = m_stat_net_max = 0;
   m_stat_how = {};
+  m_stat_held = 0;
   m_stat_time = std::chrono::steady_clock::now();
 }
 
