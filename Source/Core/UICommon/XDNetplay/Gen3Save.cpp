@@ -119,6 +119,19 @@ Gen3Game EmeraldSave::DetectGame(const EmeraldSave& save)
     return Gen3Game::RubySapphire;
   if (code == 1)
     return Gen3Game::FireRedLeafGreen;
+
+  // Emerald keeps its security key in this field, but some Ruby saves have stray data here too.
+  // Emerald stores the money XORed with the key and Ruby/Sapphire store it plainly, so see which
+  // reading gives a believable amount (the game caps money at 999999).
+  const std::vector<u8> sec1 = save.SectionBytes(1);
+  if (sec1.size() >= 0x494)
+  {
+    constexpr size_t MONEY_OFFSET = 0x0490;
+    constexpr u32 MAX_MONEY = 999999;
+    const u32 raw = ReadU32(sec1.data(), MONEY_OFFSET);
+    if (raw <= MAX_MONEY && (raw ^ code) > MAX_MONEY)
+      return Gen3Game::RubySapphire;
+  }
   return Gen3Game::Emerald;
 }
 

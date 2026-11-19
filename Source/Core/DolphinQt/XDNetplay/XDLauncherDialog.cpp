@@ -1431,7 +1431,7 @@ void XDLauncherDialog::OnImportSave(int device)
 {
   const QString path =
       QFileDialog::getOpenFileName(this, tr("Select a Gen 3 save file"), QString(),
-                                   tr("Gen 3 save files (*.sav *.sa2 *.srm);;All files (*)"));
+                                   tr("Gen 3 save files (*.sav *.sa2 *.srm *.fla *.dat);;All files (*)"));
   if (path.isEmpty())
     return;
 
