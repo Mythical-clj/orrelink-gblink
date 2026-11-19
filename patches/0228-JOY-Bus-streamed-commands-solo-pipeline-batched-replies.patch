@@ -1,0 +1,904 @@
+From e5eb202e289a15b532dd73c32f92df5c502ef4e5 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 19 Nov 2026 01:21:59 -0600
+Subject: [PATCH] JOY Bus: commands stream to the adapter, solo mode shares the
+ room's pipeline, replies are batched
+
+The adapter is given four commands at a time (after a test with harmless status commands at
+mode-on; one at a time if it does not answer them in order), so the USB turnaround of one
+command overlaps the GBA's work on the next. Playing alone now uses the lag model with a
+30 ms lag, so the game's commands can be queued ahead of their replies. The adapter thread
+gives a room the owner's replies itself, a few to a packet, in the order of the line (so an
+owner stuck waiting on another machine can no longer hold its own replies back); the JoyReply
+message now carries several replies.
+---
+ Source/Core/Core/HW/SI/SI_DeviceGBALink.cpp   |  88 +++--
+ Source/Core/Core/HW/SI/SI_DeviceGBALink.h     |   2 +
+ Source/Core/Core/NetPlayClient.cpp            |  86 ++++-
+ Source/Core/Core/NetPlayClient.h              |  11 +
+ Source/Core/Core/NetPlayProto.h               |   3 +
+ Source/Core/Core/NetPlayServer.cpp            |  25 +-
+ .../Core/InputCommon/GBLink/GBLinkManager.cpp | 338 ++++++++++++++++--
+ .../Core/InputCommon/GBLink/GBLinkManager.h   |  19 +-
+ 8 files changed, 486 insertions(+), 86 deletions(-)
+
+diff --git a/Source/Core/Core/HW/SI/SI_DeviceGBALink.cpp b/Source/Core/Core/HW/SI/SI_DeviceGBALink.cpp
+index e201b155a..b0236d461 100644
+--- a/Source/Core/Core/HW/SI/SI_DeviceGBALink.cpp
++++ b/Source/Core/Core/HW/SI/SI_DeviceGBALink.cpp
+@@ -175,6 +175,9 @@ CSIDevice_GBALink::CSIDevice_GBALink(Core::System& system, SIDevices device, int
+   JoyTrace::Get().Open(m_system.GetSystemTimers().GetTicksPerSecond());
+ #ifdef ORRELINK_JOYBUS
+   m_pipeline = Config::Get(Config::MAIN_GBLINK_JOY_PIPELINE);
++  // The adapter thread gives a netplay room the replies of this machine's GBA itself, a few to a
++  // packet, as they come in.
++  GBLink::Manager::SetJoyReplySink(&NetPlay::QueueJoyReply, &NetPlay::FlushJoyReplies);
+ #endif
+ }
+ 
+@@ -186,7 +189,7 @@ CSIDevice_GBALink::~CSIDevice_GBALink()
+ #ifdef ORRELINK_JOYBUS
+   for (const Inflight& f : m_inflight)
+   {
+-    if (f.sent)
++    if (f.id != 0)
+       GBLink::Manager::Get().JoyDiscard(f.device, f.id);
+   }
+ #endif
+@@ -235,11 +238,15 @@ int CSIDevice_GBALink::RunBuffer(u8* buffer, int request_length)
+     {
+       // Decided once, at the first command, the same on every machine of a room.
+       const bool netplay = NetPlay::IsNetPlayRunning();
+-      if (netplay && m_owner != 0)
++      // Playing alone, the model lets the game's commands go to the GBA ahead of its replies
++      // (the commands on the way overlap on the adapter), with a short lag.
++      const bool solo_pipelined = !netplay && m_owner == 1 && m_link_device >= 0 && m_pipeline;
++      if ((netplay && m_owner != 0) || solo_pipelined)
+       {
++        const u64 lag_ms = netplay ? kLagMs : kSoloLagMs;
+         m_model = std::make_unique<JoyBusLagModel>(
+-            u64{m_system.GetSystemTimers().GetTicksPerSecond()} * kLagMs / 1000);
+-        JoyLog(fmt::format("joybus port {}: lag model on, {} ms", m_device_number + 1, kLagMs));
++            u64{m_system.GetSystemTimers().GetTicksPerSecond()} * lag_ms / 1000);
++        JoyLog(fmt::format("joybus port {}: lag model on, {} ms", m_device_number + 1, lag_ms));
+       }
+     }
+     if (m_model)
+@@ -277,21 +284,15 @@ int CSIDevice_GBALink::RunBuffer(u8* buffer, int request_length)
+           m_last_status_sent = std::chrono::steady_clock::now();
+         }
+         if (pipelined)
+-        {
+-          auto& manager = GBLink::Manager::Get();
+-          m_cur_id = manager.JoyQueue(m_link_device, buffer, tx_len, m_rx_len);
+-          if (m_cur_id == 0 && !m_inflight.empty())
+-          {
+-            // The adapter's line is full: wait for its oldest reply, then try again.
+-            CollectOne();
+-            m_cur_id = manager.JoyQueue(m_link_device, buffer, tx_len, m_rx_len);
+-          }
+-          m_started = m_cur_id != 0;
+-        }
++          QueueCommand(buffer, tx_len, 0);
+         else
+-        {
+           m_started = GBLink::Manager::Get().JoyBegin(m_link_device, buffer, tx_len, m_rx_len);
+-        }
++      }
++      else if (pipelined)
++      {
++        // Not sent, but its reply keeps its place in the line: the latest status for an idle
++        // poll held back, no reply for a GBA that is not there.
++        QueueCommand(buffer, tx_len, m_held_status ? 1 : 2);
+       }
+     }
+ #else
+@@ -555,6 +556,26 @@ bool CSIDevice_GBALink::ShouldHoldStatus() const
+   return true;
+ }
+ 
++// Puts the command in the adapter's line (kind: see GBLink::Link::JoyQueue). The adapter thread
++// gives the room its reply the moment it is in.
++void CSIDevice_GBALink::QueueCommand(const u8* buffer, int tx_len, int kind)
++{
++  auto& manager = GBLink::Manager::Get();
++  const bool is_status = m_last_cmd == EBufferCommands::CMD_STATUS;
++  const int net_port = NetPlay::IsNetPlayRunning() ? m_device_number : -1;
++  const u32 net_seq = m_model_index + 1;
++  m_cur_id = manager.JoyQueue(m_link_device, buffer, tx_len, m_rx_len, kind, is_status, net_port,
++                              net_seq);
++  if (m_cur_id == 0 && !m_inflight.empty())
++  {
++    // The adapter's line is full: wait for its oldest reply, then try again.
++    CollectOne();
++    m_cur_id = manager.JoyQueue(m_link_device, buffer, tx_len, m_rx_len, kind, is_status,
++                                net_port, net_seq);
++  }
++  m_started = kind == 0 && m_cur_id != 0;
++}
++
+ void CSIDevice_GBALink::CollectOne()
+ {
+   if (m_inflight.empty())
+@@ -563,17 +584,27 @@ void CSIDevice_GBALink::CollectOne()
+   m_inflight.pop_front();
+   u8 rx[5] = {};
+   int got = -1;
+-  if (f.synthetic)
+-  {
+-    got = 3;
+-    std::copy(m_last_status.begin(), m_last_status.begin() + 3, rx);
+-  }
+-  else if (f.sent)
++  if (f.id != 0)
+   {
++    // Already given to the room by the adapter thread.
+     double usb_ms = 0;
+     got = GBLink::Manager::Get().JoyCollect(f.device, f.id, rx, &usb_ms, 2000);
+-    m_stat_usb_ms += usb_ms;
+-    m_stat_usb_max = std::max(m_stat_usb_max, usb_ms);
++    if (f.sent)
++    {
++      m_stat_usb_ms += usb_ms;
++      m_stat_usb_max = std::max(m_stat_usb_max, usb_ms);
++    }
++  }
++  else
++  {
++    // Not in the adapter's line (another port has the adapter): no reply, or the held status.
++    if (f.synthetic)
++    {
++      got = 3;
++      std::copy(m_last_status.begin(), m_last_status.begin() + 3, rx);
++    }
++    if (NetPlay::IsNetPlayRunning())
++      NetPlay::SendJoyReply(m_device_number, f.index + 1, got, rx);
+   }
+   if (got != f.rx_len)
+     got = -1;  // a short reply is no reply, on every machine
+@@ -583,8 +614,6 @@ void CSIDevice_GBALink::CollectOne()
+   real.len = static_cast<s8>(got);
+   if (got > 0)
+     std::copy(rx, rx + got, real.data.begin());
+-  if (NetPlay::IsNetPlayRunning())
+-    NetPlay::SendJoyReply(m_device_number, f.index + 1, got, rx);
+   if (m_real.size() < f.index)
+   {
+     JoyBusLagModel::Reply none;
+@@ -599,7 +628,7 @@ void CSIDevice_GBALink::CollectReady()
+   while (!m_inflight.empty())
+   {
+     const Inflight& f = m_inflight.front();
+-    if (f.sent && !GBLink::Manager::Get().JoyReady(f.device, f.id))
++    if (f.id != 0 && !GBLink::Manager::Get().JoyReady(f.device, f.id))
+       break;
+     CollectOne();
+   }
+@@ -618,6 +647,9 @@ bool CSIDevice_GBALink::ShouldHoldStatus() const
+ {
+   return false;
+ }
++void CSIDevice_GBALink::QueueCommand(const u8*, int, int)
++{
++}
+ void CSIDevice_GBALink::CollectOne()
+ {
+   m_inflight.clear();
+diff --git a/Source/Core/Core/HW/SI/SI_DeviceGBALink.h b/Source/Core/Core/HW/SI/SI_DeviceGBALink.h
+index bd998e0b7..b88e7d60b 100644
+--- a/Source/Core/Core/HW/SI/SI_DeviceGBALink.h
++++ b/Source/Core/Core/HW/SI/SI_DeviceGBALink.h
+@@ -58,6 +58,7 @@ private:
+     bool synthetic = false;  // an idle status held back: answered with the last real one
+     bool is_status = false;
+   };
++  void QueueCommand(const u8* buffer, int tx_len, int kind);
+   void CollectOne();
+   void CollectReady();
+   void DrainInflight();
+@@ -99,6 +100,7 @@ private:
+   // Netplay: what the game hears comes from the lag model. Model index i is
+   // command number i + 1 (m_seq) on every machine.
+   static constexpr u64 kLagMs = 100;
++  static constexpr u64 kSoloLagMs = 30;
+   std::unique_ptr<JoyBusLagModel> m_model;
+   u32 m_model_index = 0;
+   std::vector<JoyBusLagModel::Reply> m_real;  // the owner's: the GBA's replies so far
+diff --git a/Source/Core/Core/NetPlayClient.cpp b/Source/Core/Core/NetPlayClient.cpp
+index 34e3398a0..e2c1d0f45 100644
+--- a/Source/Core/Core/NetPlayClient.cpp
++++ b/Source/Core/Core/NetPlayClient.cpp
+@@ -4617,29 +4617,77 @@ void NetPlayClient::ComputeGameDigest(const SyncIdentifier& sync_identifier)
+ }
+ 
+ // called from ---CPU--- thread
++// Replies are gathered and sent a few to a packet: a game's burst is thousands a second.
++// Callable from any thread.
++void NetPlayClient::QueueJoyReply(int port, u32 seq, int len, const u8* data)
++{
++  JoyOutEntry e;
++  e.port = static_cast<PadIndex>(port);
++  e.seq = seq;
++  e.len = static_cast<u8>(len > 0 ? len : 0xFF);
++  for (int i = 0; i < 5; i++)
++    e.data[i] = len > i ? data[i] : 0;
++  bool full;
++  {
++    std::lock_guard lk(m_joy_out_mutex);
++    m_joy_out.push_back(e);
++    full = m_joy_out.size() >= 8;
++  }
++  if (full)
++    FlushJoyReplies();
++}
++
++void NetPlayClient::FlushJoyReplies()
++{
++  std::vector<JoyOutEntry> out;
++  {
++    std::lock_guard lk(m_joy_out_mutex);
++    out.swap(m_joy_out);
++  }
++  // In order, one packet for each run of one port's replies.
++  size_t i = 0;
++  while (i < out.size())
++  {
++    size_t j = i;
++    while (j < out.size() && out[j].port == out[i].port && j - i < 255)
++      j++;
++    sf::Packet packet;
++    packet << MessageID::JoyReply << out[i].port << static_cast<u8>(j - i);
++    for (size_t k = i; k < j; k++)
++    {
++      packet << out[k].seq << out[k].len;
++      for (int b = 0; b < 5; b++)
++        packet << out[k].data[b];
++    }
++    SendAsync(std::move(packet));
++    i = j;
++  }
++}
++
+ void NetPlayClient::SendJoyReply(int port, u32 seq, int len, const u8* data)
+ {
+-  sf::Packet packet;
+-  packet << MessageID::JoyReply;
+-  packet << static_cast<PadIndex>(port) << seq << static_cast<u8>(len > 0 ? len : 0xFF);
+-  for (int i = 0; i < 5; i++)
+-    packet << static_cast<u8>(len > i ? data[i] : 0);
+-  SendAsync(std::move(packet));
++  QueueJoyReply(port, seq, len, data);
++  FlushJoyReplies();
+ }
+ 
+ // called from ---NETPLAY--- thread
+ void NetPlayClient::OnJoyReply(sf::Packet& packet)
+ {
+   PadIndex map;
+-  JoyReplyEntry entry;
+-  u8 len;
+-  packet >> map >> entry.seq >> len;
+-  for (u8& byte : entry.data)
+-    packet >> byte;
+-  entry.len = len == 0xFF ? -1 : std::min<int>(len, 5);
++  u8 count;
++  packet >> map >> count;
+   if (map < 0 || static_cast<size_t>(map) >= m_joy_replies.size())
+     return;
++  for (u8 n = 0; n < count; n++)
+   {
++    JoyReplyEntry entry;
++    u8 len;
++    packet >> entry.seq >> len;
++    for (u8& byte : entry.data)
++      packet >> byte;
++    if (!packet)
++      break;
++    entry.len = len == 0xFF ? -1 : std::min<int>(len, 5);
+     std::lock_guard lk(m_joy_mutex);
+     m_joy_replies[map].push_back(entry);
+   }
+@@ -4789,6 +4837,20 @@ void SendJoyReply(int port, u32 seq, int len, const u8* data)
+     netplay_client->SendJoyReply(port, seq, len, data);
+ }
+ 
++void QueueJoyReply(int port, u32 seq, int len, const u8* data)
++{
++  std::lock_guard lk(crit_netplay_client);
++  if (netplay_client)
++    netplay_client->QueueJoyReply(port, seq, len, data);
++}
++
++void FlushJoyReplies()
++{
++  std::lock_guard lk(crit_netplay_client);
++  if (netplay_client)
++    netplay_client->FlushJoyReplies();
++}
++
+ bool WaitJoyReply(int port, u32 seq, int* len, u8* data, const std::function<void()>* pump)
+ {
+   // Not under crit_netplay_client: this waits for the network, and stopping must not wait for it.
+diff --git a/Source/Core/Core/NetPlayClient.h b/Source/Core/Core/NetPlayClient.h
+index c3e55a714..4743ba071 100644
+--- a/Source/Core/Core/NetPlayClient.h
++++ b/Source/Core/Core/NetPlayClient.h
+@@ -313,6 +313,8 @@ public:
+ 
+   // Real GBAs on GB-Link adapters (NetPlay::SendJoyReply / WaitJoyReply).
+   void SendJoyReply(int port, u32 seq, int len, const u8* data);
++  void QueueJoyReply(int port, u32 seq, int len, const u8* data);
++  void FlushJoyReplies();
+   bool WaitJoyReply(int port, u32 seq, int* len, u8* data, const std::function<void()>* pump = nullptr);
+   const PadMappingArray& GetWiimoteMapping() const;
+ 
+@@ -526,6 +528,15 @@ private:
+   std::mutex m_joy_mutex;
+   std::condition_variable m_joy_cv;
+   std::array<std::vector<JoyReplyEntry>, 4> m_joy_replies;
++  struct JoyOutEntry
++  {
++    PadIndex port = 0;
++    u32 seq = 0;
++    u8 len = 0;
++    u8 data[5] = {};
++  };
++  std::mutex m_joy_out_mutex;
++  std::vector<JoyOutEntry> m_joy_out;
+   void OnPadData(sf::Packet& packet);
+   void OnPadHostData(sf::Packet& packet);
+   void OnWiimoteData(sf::Packet& packet);
+diff --git a/Source/Core/Core/NetPlayProto.h b/Source/Core/Core/NetPlayProto.h
+index ae46f46b3..5cb2fcec5 100644
+--- a/Source/Core/Core/NetPlayProto.h
++++ b/Source/Core/Core/NetPlayProto.h
+@@ -388,6 +388,9 @@ int GbaInputPadFor(int channel);
+ int JoyOwner(int port);
+ // The owner's side: the reply to the port's command number `seq` (len < 0: no reply), for the room.
+ void SendJoyReply(int port, u32 seq, int len, const u8* data);
++// The same, gathered a few to a packet (from any thread); FlushJoyReplies sends what is gathered.
++void QueueJoyReply(int port, u32 seq, int len, const u8* data);
++void FlushJoyReplies();
+ // Everyone else's: waits for that reply. False when the game stopped or the owner left.
+ // |pump|, when given, is run about every millisecond while waiting: the owner's own replies still
+ // on their way must not sit behind a wait for someone else's.
+diff --git a/Source/Core/Core/NetPlayServer.cpp b/Source/Core/Core/NetPlayServer.cpp
+index f8e787368..328a7b455 100644
+--- a/Source/Core/Core/NetPlayServer.cpp
++++ b/Source/Core/Core/NetPlayServer.cpp
+@@ -1600,21 +1600,30 @@ unsigned int NetPlayServer::OnData(sf::Packet& packet, Client& player)
+     if (player.current_game != m_current_game)
+       break;
+ 
++    // One or more replies of one port: map, count, then (seq, len, 5 bytes) each.
+     PadIndex map;
+-    u32 seq;
+-    u8 len;
+-    packet >> map >> seq >> len;
++    u8 count;
++    packet >> map >> count;
+     if (!IsValidPadIndex(m_pad_map, map) || m_pad_map.at(map) != player.pid)
+       return 1;
+ 
+     sf::Packet spac;
+-    spac << MessageID::JoyReply << map << seq << len;
+-    for (int i = 0; i < 5; i++)
++    spac << MessageID::JoyReply << map << count;
++    for (u8 n = 0; n < count; n++)
+     {
+-      u8 byte;
+-      packet >> byte;
+-      spac << byte;
++      u32 seq;
++      u8 len;
++      packet >> seq >> len;
++      spac << seq << len;
++      for (int i = 0; i < 5; i++)
++      {
++        u8 byte;
++        packet >> byte;
++        spac << byte;
++      }
+     }
++    if (!packet)
++      return 1;
+     SendToClients(spac, player.pid);
+   }
+   break;
+diff --git a/Source/Core/InputCommon/GBLink/GBLinkManager.cpp b/Source/Core/InputCommon/GBLink/GBLinkManager.cpp
+index e291aa063..85122c2ae 100644
+--- a/Source/Core/InputCommon/GBLink/GBLinkManager.cpp
++++ b/Source/Core/InputCommon/GBLink/GBLinkManager.cpp
+@@ -4,6 +4,8 @@
+ #include "InputCommon/GBLink/GBLinkManager.h"
+ 
+ #include <algorithm>
++#include <atomic>
++#include <deque>
+ #include <map>
+ #include <chrono>
+ #include <thread>
+@@ -25,6 +27,8 @@ namespace GBLink
+ {
+ namespace
+ {
++std::atomic<void (*)(int, uint32_t, int, const uint8_t*)> s_reply_send{nullptr};
++std::atomic<void (*)()> s_reply_flush{nullptr};
+ using Clock = std::chrono::steady_clock;
+ 
+ constexpr int kDumpWaitForGbaSeconds = 90;
+@@ -222,7 +226,8 @@ int Link::JoyEnd(uint8_t* rx, double* usb_ms)
+   return m_joy.got;
+ }
+ 
+-uint32_t Link::JoyQueue(int device, const uint8_t* tx, int tx_len, int rx_len)
++uint32_t Link::JoyQueue(int device, const uint8_t* tx, int tx_len, int rx_len, int kind,
++                        bool is_status, int net_port, uint32_t net_seq)
+ {
+   if (!m_joy_ready || tx_len < 1 || tx_len > 5 || rx_len < 1 || rx_len > 5)
+     return 0;
+@@ -244,6 +249,10 @@ uint32_t Link::JoyQueue(int device, const uint8_t* tx, int tx_len, int rx_len)
+     q.tx_len = tx_len;
+     q.rx_len = rx_len;
+     q.id = id;
++    q.kind = kind;
++    q.is_status = is_status;
++    q.net_port = net_port;
++    q.net_seq = net_seq;
+     m_joyq.push_back(q);
+   }
+   m_cv.notify_all();
+@@ -397,35 +406,197 @@ void Link::RunJoybus(UsbLink& usb)
+   uint64_t stat_ok = 0, stat_none = 0;
+   double stat_ms = 0, stat_ms_max = 0;
+ 
++  // Several commands on their way to the adapter at once. A command is sent while the one before
++  // it is still being answered, so the USB turnaround of one overlaps the GBA's work on another
++  // (about half of a command's time otherwise). Each is numbered and its reply carries the number.
++  // First a test with harmless status commands: if the adapter does not answer four sent at once,
++  // each in order, it gets them one at a time as before.
++  size_t depth = 1;
++  {
++    usb.DrainData(20);
++    uint8_t first = 0;
++    for (int i = 0; i < 4; i++)
++    {
++      seq++;
++      if (i == 0)
++        first = seq;
++      if (!usb.SendCommand({CMD_JOY_TRANSFER, seq, 1, 3, 0x00}))
++        break;
++    }
++    int in_order = 0;
++    const auto until = Clock::now() + std::chrono::milliseconds(600);
++    uint8_t buf[64];
++    while (in_order < 4 && Clock::now() < until && !usb.Lost())
++    {
++      const size_t n = usb.ReadBytes(buf, sizeof(buf), 50);
++      if (n < 5 || buf[0] != CMD_JOY_TRANSFER)
++        continue;
++      if (buf[1] != static_cast<uint8_t>(first + in_order))
++        break;
++      in_order++;
++    }
++    if (in_order == 4)
++    {
++      depth = 4;
++      LogLine("JOY Bus: the adapter takes commands four at a time");
++    }
++    else
++    {
++      LogLine(fmt::format("JOY Bus: the adapter answered {} of 4 commands sent at once, in order; "
++                          "sending them one at a time",
++                          in_order));
++      usb.DrainData(100);
++    }
++  }
++
++  struct Out
++  {
++    JoyQueued q;
++    uint8_t seq = 0;
++    bool ready = false;  // not for the adapter (a placeholder, or one that could not be sent)
++    Clock::time_point sent;
++  };
++  std::deque<Out> out;
++  size_t real_out = 0;
++  uint8_t last_status[3] = {};
++  bool have_last_status = false;
++  auto last_flush = Clock::now();
++  bool unflushed = false;  // replies given to the sink, not yet flushed
++
++  const auto flush_replies = [&] {
++    if (unflushed)
++    {
++      if (const auto flush = s_reply_flush.load())
++        flush();
++    }
++    unflushed = false;
++    last_flush = Clock::now();
++  };
++  // Completes |e| (the front of the line) with |got| bytes in |rx|.
++  const auto finish = [&](const Out& e, int got, const uint8_t* rx) {
++    const JoyQueued& q = e.q;
++    uint8_t r[5] = {};
++    if (q.kind == 1)
++    {
++      got = have_last_status && q.rx_len == 3 ? 3 : -1;
++      if (got == 3)
++        std::copy(last_status, last_status + 3, r);
++    }
++    else if (q.kind == 2)
++    {
++      got = -1;
++    }
++    else
++    {
++      if (got != q.rx_len)
++        got = -1;  // a short reply is no reply, on every machine
++      if (got > 0)
++        std::copy(rx, rx + got, r);
++      if (q.is_status && got == 3)
++      {
++        std::copy(r, r + 3, last_status);
++        have_last_status = true;
++      }
++    }
++    const double ms =
++        e.ready ? 0.0 : std::chrono::duration<double, std::milli>(Clock::now() - e.sent).count();
++    bool abandoned;
++    {
++      std::lock_guard lock(m_mutex);
++      abandoned = m_joyq_abandoned.erase(q.id) != 0;
++    }
++    if (!abandoned)
++    {
++      // To the room before the caller can see the reply, so replies leave in order.
++      if (q.net_port >= 0)
++      {
++        if (const auto send = s_reply_send.load())
++        {
++          send(q.net_port, q.net_seq, got, r);
++          unflushed = true;
++        }
++      }
++      JoyQueuedResult result;
++      std::copy(r, r + 5, result.rx);
++      result.got = got;
++      result.usb_ms = ms;
++      {
++        std::lock_guard lock(m_mutex);
++        m_joyq_done[q.id] = result;
++      }
++      m_joy_cv.notify_all();
++    }
++    if (q.kind == 0)
++    {
++      last_request = Clock::now();
++      (got > 0 ? stat_ok : stat_none)++;
++      stat_ms += ms;
++      stat_ms_max = std::max(stat_ms_max, ms);
++      if (got > 0 && !gba_seen)
++      {
++        gba_seen = true;
++        SetStatus(State::ControllerActive, "Cartridge linked");
++      }
++    }
++  };
++  const auto finish_ready_front = [&] {
++    while (!out.empty() && out.front().ready)
++    {
++      finish(out.front(), -1, nullptr);
++      out.pop_front();
++    }
++  };
++  // Gives up on the commands the adapter has not answered (it is leaving JOY Bus mode, or it
++  // stopped keeping to the order).
++  const auto fail_all = [&] {
++    while (!out.empty())
++    {
++      if (!out.front().ready)
++        real_out--;
++      finish(out.front(), -1, nullptr);
++      out.pop_front();
++    }
++  };
++
+   while (true)
+   {
+     JoyRequest req;
+     bool have = false;
+-    bool queued = false;  // req came from the pipelined line, not the single slot
++    std::vector<JoyQueued> take;
+     std::unique_ptr<DumpRequest> dump;
+     {
+       std::unique_lock lock(m_mutex);
+-      m_cv.wait_for(lock, std::chrono::milliseconds(200),
+-                    [this] { return m_quit || m_joy.pending || m_dump || !m_joyq.empty(); });
++      if (out.empty())
++      {
++        m_cv.wait_for(lock, std::chrono::milliseconds(200),
++                      [this] { return m_quit || m_joy.pending || m_dump || !m_joyq.empty(); });
++      }
+       if (m_quit)
+         break;
+       dump = std::move(m_dump);
+       if (m_joy.pending)
+       {
+-        req = m_joy;
+-        have = true;
++        // The single slot goes when nothing is on its way.
++        if (out.empty())
++        {
++          req = m_joy;
++          have = true;
++        }
+       }
+-      else if (!m_joyq.empty())
++      else
+       {
+-        const JoyQueued& q = m_joyq.front();
+-        req = JoyRequest{};
+-        std::copy(q.tx, q.tx + q.tx_len, req.tx);
+-        req.tx_len = q.tx_len;
+-        req.rx_len = q.rx_len;
+-        req.id = q.id;
+-        queued = true;
+-        have = true;
+-        m_joyq.pop_front();
++        size_t room = depth - std::min(depth, real_out);
++        while (!m_joyq.empty())
++        {
++          if (m_joyq.front().kind == 0)
++          {
++            if (room == 0)
++              break;
++            room--;
++          }
++          take.push_back(m_joyq.front());
++          m_joyq.pop_front();
++        }
+       }
+     }
+     if (dump)
+@@ -436,28 +607,112 @@ void Link::RunJoybus(UsbLink& usb)
+         dump->done(std::move(r));
+     }
+     if (!m_owner.IsJoybus() || usb.Lost())
++    {
++      for (const JoyQueued& q : take)
++        out.push_back(Out{q, 0, true, {}});
++      fail_all();
+       break;
++    }
+ 
+     const auto now = Clock::now();
+-    if (have)
++    for (const JoyQueued& q : take)
+     {
+-      const auto t0 = Clock::now();
+-      const int got = transfer(req.tx, req.tx_len, req.rx, req.rx_len);
+-      const double ms = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
++      Out e;
++      e.q = q;
++      if (q.kind != 0)
+       {
+-        std::lock_guard lock(m_mutex);
+-        if (queued)
++        e.ready = true;
++      }
++      else
++      {
++        seq++;
++        e.seq = seq;
++        std::vector<uint8_t> cmd{CMD_JOY_TRANSFER, seq, static_cast<uint8_t>(q.tx_len),
++                                 static_cast<uint8_t>(q.rx_len)};
++        cmd.insert(cmd.end(), q.tx, q.tx + q.tx_len);
++        e.sent = Clock::now();
++        if (!usb.SendCommand(cmd))
++          e.ready = true;
++        else
++          real_out++;
++      }
++      out.push_back(e);
++    }
++    finish_ready_front();
++
++    if (real_out > 0)
++    {
++      // The front of the line is a command for the adapter: its reply, or its time running out.
++      if (unflushed && Clock::now() - last_flush >= std::chrono::milliseconds(1))
++        flush_replies();
++      uint8_t buf[64];
++      const size_t n = usb.ReadBytes(buf, sizeof(buf), unflushed ? 1 : 20);
++      if (n >= 5 && buf[0] == CMD_JOY_TRANSFER)
++      {
++        size_t at = out.size();
++        for (size_t i = 0; i < out.size(); i++)
++        {
++          if (!out[i].ready && out[i].seq == buf[1])
++          {
++            at = i;
++            break;
++          }
++        }
++        if (at < out.size())
+         {
+-          if (m_joyq_abandoned.erase(req.id) == 0)
++          bool lost = false;
++          for (size_t i = 0; i < at; i++)
+           {
+-            JoyQueuedResult result;
+-            std::copy(req.rx, req.rx + 5, result.rx);
+-            result.got = got;
+-            result.usb_ms = ms;
+-            m_joyq_done[req.id] = result;
++            // Placeholders ahead of it are over; a command ahead of it never was answered.
++            if (!out.front().ready)
++            {
++              real_out--;
++              lost = true;
++            }
++            finish(out.front(), -1, nullptr);
++            out.pop_front();
+           }
++          if (lost && depth > 1)
++          {
++            LogLine("JOY Bus: a command went unanswered while later ones were sent; sending "
++                    "them one at a time from now on");
++            depth = 1;
++          }
++          wiring = buf[3];
++          int got = std::min<int>(buf[4], out.front().q.rx_len);
++          if (buf[2] != 0 || got <= 0 || n < static_cast<size_t>(5 + got))
++            got = -1;
++          real_out--;
++          finish(out.front(), got, buf + 5);
++          out.pop_front();
++          finish_ready_front();
+         }
+-        else if (m_joy.pending && m_joy.id == req.id)  // (not given up on meanwhile)
++      }
++      if (!out.empty() && !out.front().ready &&
++          Clock::now() - out.front().sent > std::chrono::milliseconds(200))
++      {
++        real_out--;
++        finish(out.front(), -1, nullptr);
++        out.pop_front();
++        if (depth > 1)
++        {
++          LogLine("JOY Bus: a command timed out with several sent at once; sending them one at a "
++                  "time from now on");
++          depth = 1;
++        }
++        finish_ready_front();
++      }
++      if (out.empty())
++        flush_replies();
++    }
++    else if (have)
++    {
++      const auto t0 = Clock::now();
++      const int got = transfer(req.tx, req.tx_len, req.rx, req.rx_len);
++      const double ms = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
++      {
++        std::lock_guard lock(m_mutex);
++        if (m_joy.pending && m_joy.id == req.id)  // (not given up on meanwhile)
+         {
+           std::copy(req.rx, req.rx + 5, m_joy.rx);
+           m_joy.got = got;
+@@ -477,7 +732,7 @@ void Link::RunJoybus(UsbLink& usb)
+         SetStatus(State::ControllerActive, "Cartridge linked");
+       }
+     }
+-    else if (now - last_request > std::chrono::seconds(2) &&
++    else if (out.empty() && take.empty() && now - last_request > std::chrono::seconds(2) &&
+              now - last_probe > std::chrono::seconds(1))
+     {
+       // Nothing is asking (no game running): a status command, which changes nothing on the GBA,
+@@ -500,15 +755,16 @@ void Link::RunJoybus(UsbLink& usb)
+       if (stat_ok + stat_none > 0)
+       {
+         LogLine(fmt::format("joybus usb: {} replies, {} unanswered, {:.2f} ms each (max {:.2f}), "
+-                            "wiring {}, port {}",
++                            "wiring {}, port {}, {} at a time",
+                             stat_ok, stat_none, stat_ms / (stat_ok + stat_none), stat_ms_max,
+-                            wiring, m_joy_device.load() + 1));
++                            wiring, m_joy_device.load() + 1, depth));
+       }
+       stat_ok = stat_none = 0;
+       stat_ms = stat_ms_max = 0;
+       stat_time = Clock::now();
+     }
+   }
++  fail_all();
+ 
+   m_joy_ready = false;
+   {
+@@ -1260,17 +1516,26 @@ bool Manager::JoyBegin(int device, const uint8_t* tx, int tx_len, int rx_len)
+   return false;
+ }
+ 
+-uint32_t Manager::JoyQueue(int device, const uint8_t* tx, int tx_len, int rx_len)
++void Manager::SetJoyReplySink(void (*send)(int port, uint32_t seq, int len, const uint8_t* data),
++                              void (*flush)())
++{
++  s_reply_send = send;
++  s_reply_flush = flush;
++}
++
++uint32_t Manager::JoyQueue(int device, const uint8_t* tx, int tx_len, int rx_len, int kind,
++                           bool is_status, int net_port, uint32_t net_seq)
+ {
+   for (const auto& slot : m_links)
+   {
+     Link* l = slot.load();
+     if (l && l->JoyDevice() == device)
+-      return l->JoyQueue(device, tx, tx_len, rx_len);
++      return l->JoyQueue(device, tx, tx_len, rx_len, kind, is_status, net_port, net_seq);
+   }
+   if (Link* l = LinkFor(device))
+   {
+-    if (const uint32_t id = l->JoyQueue(device, tx, tx_len, rx_len))
++    if (const uint32_t id =
++            l->JoyQueue(device, tx, tx_len, rx_len, kind, is_status, net_port, net_seq))
+       return id;
+   }
+   for (const auto& slot : m_links)
+@@ -1278,7 +1543,8 @@ uint32_t Manager::JoyQueue(int device, const uint8_t* tx, int tx_len, int rx_len
+     Link* l = slot.load();
+     if (l)
+     {
+-      if (const uint32_t id = l->JoyQueue(device, tx, tx_len, rx_len))
++      if (const uint32_t id =
++              l->JoyQueue(device, tx, tx_len, rx_len, kind, is_status, net_port, net_seq))
+         return id;
+     }
+   }
+diff --git a/Source/Core/InputCommon/GBLink/GBLinkManager.h b/Source/Core/InputCommon/GBLink/GBLinkManager.h
+index 59d92763d..104468053 100644
+--- a/Source/Core/InputCommon/GBLink/GBLinkManager.h
++++ b/Source/Core/InputCommon/GBLink/GBLinkManager.h
+@@ -103,7 +103,13 @@ public:
+   // goes on at once. JoyReady says whether the reply is in; JoyCollect returns it (the reply length,
+   // -1 for none) and must be called once for every id, or the id given to JoyDiscard. Answered in
+   // the order queued. Do not mix with JoyBegin while commands are queued.
+-  uint32_t JoyQueue(int device, const uint8_t* tx, int tx_len, int rx_len);
++  //
++  // |kind| 0 is a command for the GBA. 1 and 2 are placeholders that keep the line's order for a
++  // command that is not sent: 1 is answered with the latest status the GBA gave, 2 with no reply.
++  // When |net_port| >= 0 the adapter thread gives the reply to the reply sink itself, the moment
++  // it is in (as |net_seq| of that port), without waiting for the caller to collect it.
++  uint32_t JoyQueue(int device, const uint8_t* tx, int tx_len, int rx_len, int kind = 0,
++                    bool is_status = false, int net_port = -1, uint32_t net_seq = 0);
+   bool JoyReady(uint32_t id);
+   int JoyCollect(uint32_t id, uint8_t* rx, double* usb_ms, int timeout_ms);
+   void JoyDiscard(uint32_t id);
+@@ -165,6 +171,10 @@ private:
+     uint8_t tx[5] = {};
+     int tx_len = 0, rx_len = 0;
+     uint32_t id = 0;
++    int kind = 0;  // see JoyQueue
++    bool is_status = false;
++    int net_port = -1;
++    uint32_t net_seq = 0;
+   };
+   struct JoyQueuedResult
+   {
+@@ -243,7 +253,12 @@ public:
+   bool JoyBegin(int device, const uint8_t* tx, int tx_len, int rx_len);
+   int JoyEnd(int device, uint8_t* rx, double* usb_ms);
+   // Pipelined counterparts, see Link::JoyQueue.
+-  uint32_t JoyQueue(int device, const uint8_t* tx, int tx_len, int rx_len);
++  uint32_t JoyQueue(int device, const uint8_t* tx, int tx_len, int rx_len, int kind = 0,
++                    bool is_status = false, int net_port = -1, uint32_t net_seq = 0);
++  // Where replies to commands queued with a net_port go (called on the adapter thread): |send|
++  // for each reply, |flush| when what was sent should reach the room now.
++  static void SetJoyReplySink(void (*send)(int port, uint32_t seq, int len, const uint8_t* data),
++                              void (*flush)());
+   bool JoyReady(int device, uint32_t id);
+   int JoyCollect(int device, uint32_t id, uint8_t* rx, double* usb_ms, int timeout_ms);
+   void JoyDiscard(int device, uint32_t id);
+-- 
+2.43.0
+
