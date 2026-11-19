@@ -116,7 +116,7 @@ need it), for adapters on stock firmware:
 - The fork is a series of patches on a pinned Dolphin base: `patches/0001`
   to `0183` are upstream OrreLink up to the point this fork began, `0184` to
   `0188` are later upstream releases (v1.8.2 and v1.8.3, battle records), and
-  `0189` to `0228` are the GB-Link work. CI applies them in order.
+  `0189` to `0229` are the GB-Link work. CI applies them in order.
 
 ### Credits for this fork
 

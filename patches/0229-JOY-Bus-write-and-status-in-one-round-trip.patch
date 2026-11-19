@@ -1,0 +1,150 @@
+From b4d9f80bda631cc6144a03b87ef659f1dc102158 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 19 Nov 2026 16:51:22 -0600
+Subject: [PATCH] JOY Bus: write and status in one round trip, upload progress
+ in the log
+
+A write (0x15) goes to the adapter with rxLen|0x80 so the status the GBA gives straight after it
+comes in the same round trip; the game's next status within 50 ms is answered with it, once.
+Logs the GBA program's progress by quarters and the time it took.
+ORRELINK_NO_COMBINE=1 turns the combined transfer off.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01764cASb9aVVk2m6JupRMj5
+---
+ .../Core/InputCommon/GBLink/GBLinkManager.cpp | 98 ++++++++++++++++++-
+ 1 file changed, 97 insertions(+), 1 deletion(-)
+
+diff --git a/Source/Core/InputCommon/GBLink/GBLinkManager.cpp b/Source/Core/InputCommon/GBLink/GBLinkManager.cpp
+index ca0c6bdc7..3d0f26660 100644
+--- a/Source/Core/InputCommon/GBLink/GBLinkManager.cpp
++++ b/Source/Core/InputCommon/GBLink/GBLinkManager.cpp
+@@ -7,6 +7,7 @@
+ #include <atomic>
+ #include <map>
+ #include <chrono>
++#include <cstdlib>
+ #include <thread>
+ #include <utility>
+ 
+@@ -336,6 +337,43 @@ void Link::RunJoybus(UsbLink& usb)
+     return -1;
+   };
+ 
++  // A write and the status the GBA gives straight after it, in one round trip (Transfer with
++  // rxLen | 0x80): [.., n, rx.., statusResult, 3 status bytes]. Returns the write's reply length,
++  // or -1 for none; |status_ok| says whether the status came too.
++  const auto transfer_then_status = [&](const uint8_t* tx, int tx_len, uint8_t* rx, int rx_len,
++                                        uint8_t* status, bool* status_ok) -> int {
++    *status_ok = false;
++    seq++;
++    std::vector<uint8_t> cmd{CMD_JOY_TRANSFER, seq, static_cast<uint8_t>(tx_len),
++                             static_cast<uint8_t>(rx_len | 0x80)};
++    cmd.insert(cmd.end(), tx, tx + tx_len);
++    if (!usb.SendCommand(cmd))
++      return -1;
++    const auto deadline = Clock::now() + std::chrono::milliseconds(200);
++    uint8_t buf[64];
++    while (Clock::now() < deadline && !usb.Lost())
++    {
++      const size_t n = usb.ReadBytes(buf, sizeof(buf), 50);
++      if (n < 5 || buf[0] != CMD_JOY_TRANSFER || buf[1] != seq)
++        continue;
++      wiring = buf[3];
++      const int got = buf[2] == 0 ? std::min<int>(buf[4], rx_len) : 0;
++      const size_t body = 5 + (buf[2] == 0 ? buf[4] : 0);
++      if (buf[2] == 2 || n < body)
++        return -1;
++      if (n >= body + 4 && buf[body] == 0)
++      {
++        std::copy(buf + body + 1, buf + body + 4, status);
++        *status_ok = true;
++      }
++      if (buf[2] != 0 || got <= 0 || n < static_cast<size_t>(5 + got))
++        return -1;
++      std::copy(buf + 5, buf + 5 + got, rx);
++      return got;
++    }
++    return -1;
++  };
++
+   // Into GameCube mode, then ask for its state until it answers: the firmware first has to leave
+   // the mode it was in, and replies left over from that mode may still be on their way.
+   usb.DrainData();
+@@ -405,6 +443,16 @@ void Link::RunJoybus(UsbLink& usb)
+   double stat_ms = 0, stat_ms_max = 0;
+   uint8_t last_status[3] = {};
+   bool have_last_status = false;
++  // The status read just after a write, given once to the game's next status within 50 ms.
++  static const bool combine = std::getenv("ORRELINK_NO_COMBINE") == nullptr;
++  uint8_t saved_status[3] = {};
++  bool saved_ok = false;
++  auto saved_at = Clock::now();
++  // Upload progress: the GBA program the game sends is 23105 words.
++  constexpr uint32_t PROGRAM_WORDS = 23105;
++  uint32_t up_words = 0;
++  auto up_start = Clock::now(), up_last = Clock::now();
++  uint32_t up_logged = 0;
+ 
+   while (true)
+   {
+@@ -486,7 +534,55 @@ void Link::RunJoybus(UsbLink& usb)
+     else if (have)
+     {
+       const auto t0 = Clock::now();
+-      int got = transfer(req.tx, req.tx_len, req.rx, req.rx_len);
++      const bool is_status_req = !queued && req.tx_len == 1 && req.tx[0] == 0x00 && req.rx_len == 3;
++      const bool is_write_req =
++          !queued && req.tx_len == 5 && req.tx[0] == 0x15 && req.rx_len == 1;
++      int got;
++      if (is_status_req && saved_ok && Clock::now() - saved_at < std::chrono::milliseconds(50))
++      {
++        // The status the adapter read just after the write: the GBA's, at about when asked.
++        saved_ok = false;
++        std::copy(saved_status, saved_status + 3, req.rx);
++        got = 3;
++      }
++      else
++      {
++        saved_ok = false;
++        if (combine && is_write_req)
++        {
++          got = transfer_then_status(req.tx, req.tx_len, req.rx, req.rx_len, saved_status,
++                                     &saved_ok);
++          saved_at = Clock::now();
++        }
++        else
++        {
++          got = transfer(req.tx, req.tx_len, req.rx, req.rx_len);
++        }
++      }
++      if (is_write_req && got == 1)
++      {
++        const auto tnow = Clock::now();
++        if (up_words == 0 || tnow - up_last > std::chrono::seconds(3))
++        {
++          up_words = 0;
++          up_logged = 0;
++          up_start = tnow;
++        }
++        up_last = tnow;
++        up_words++;
++        const uint32_t quarter = up_words * 4 / PROGRAM_WORDS;
++        if (quarter > up_logged && quarter <= 4)
++        {
++          up_logged = quarter;
++          LogLine(fmt::format("GBA program: {}% sent ({} words, {:.1f} s)", quarter * 25, up_words,
++                              std::chrono::duration<double>(tnow - up_start).count()));
++        }
++        if (up_words == PROGRAM_WORDS)
++        {
++          LogLine(fmt::format("GBA program went over in {:.1f} s",
++                              std::chrono::duration<double>(tnow - up_start).count()));
++        }
++      }
+       const double ms = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+       if (queued && line_item.is_status && got == 3)
+       {
+-- 
+2.43.0
+
