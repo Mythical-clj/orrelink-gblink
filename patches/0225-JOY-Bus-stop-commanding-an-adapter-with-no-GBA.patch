@@ -1,0 +1,89 @@
+From 11db51c075babb50e53ceecc5be52220b7a5af85 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 18 Nov 2026 18:47:46 -0600
+Subject: [PATCH] JOY Bus: stop sending commands to an adapter with no GBA on
+ it
+
+When a GBA is off or not yet at its link screen, every command waited out the adapter's ~11 ms timeout, which slowed the emulated game and, in a room, everyone waiting on its replies. After 8 silent commands over at least half a second, commands are no longer sent and the GBA is probed every 100 ms until it answers.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01764cASb9aVVk2m6JupRMj5
+---
+ Source/Core/Core/HW/SI/SI_DeviceGBALink.cpp | 34 ++++++++++++++++++++-
+ Source/Core/Core/HW/SI/SI_DeviceGBALink.h   |  8 +++++
+ 2 files changed, 41 insertions(+), 1 deletion(-)
+
+diff --git a/Source/Core/Core/HW/SI/SI_DeviceGBALink.cpp b/Source/Core/Core/HW/SI/SI_DeviceGBALink.cpp
+index f6b90daf8..92b949624 100644
+--- a/Source/Core/Core/HW/SI/SI_DeviceGBALink.cpp
++++ b/Source/Core/Core/HW/SI/SI_DeviceGBALink.cpp
+@@ -231,7 +231,18 @@ int CSIDevice_GBALink::RunBuffer(u8* buffer, int request_length)
+     }
+ #ifdef ORRELINK_JOYBUS
+     if (m_owner == 1 && m_link_device >= 0)
+-      m_started = GBLink::Manager::Get().JoyBegin(m_link_device, buffer, tx_len, m_rx_len);
++    {
++      bool send = true;
++      if (m_gba_absent)
++      {
++        const auto now = std::chrono::steady_clock::now();
++        send = now - m_last_probe >= std::chrono::milliseconds(100);
++        if (send)
++          m_last_probe = now;
++      }
++      if (send)
++        m_started = GBLink::Manager::Get().JoyBegin(m_link_device, buffer, tx_len, m_rx_len);
++    }
+ #else
+     (void)tx_len;
+ #endif
+@@ -276,6 +287,27 @@ int CSIDevice_GBALink::RunBuffer(u8* buffer, int request_length)
+ #endif
+       if (got != m_rx_len)
+         got = -1;  // a short reply is no reply, on every machine
++#ifdef ORRELINK_JOYBUS
++      if (m_started)
++      {
++        const auto now = std::chrono::steady_clock::now();
++        if (got > 0)
++        {
++          if (m_gba_absent)
++            JoyLog(fmt::format("joybus port {}: a GBA is answering again", m_device_number + 1));
++          m_gba_absent = false;
++          m_silent_streak = 0;
++          m_last_answer = now;
++        }
++        else if (++m_silent_streak >= 8 && !m_gba_absent &&
++                 now - m_last_answer >= std::chrono::milliseconds(500))
++        {
++          m_gba_absent = true;
++          JoyLog(fmt::format("joybus port {}: no GBA answering, probing every 100 ms",
++                             m_device_number + 1));
++        }
++      }
++#endif
+       real.len = static_cast<s8>(got);
+       if (got > 0)
+         std::copy(rx, rx + got, real.data.begin());
+diff --git a/Source/Core/Core/HW/SI/SI_DeviceGBALink.h b/Source/Core/Core/HW/SI/SI_DeviceGBALink.h
+index aa054d60b..8bdea6188 100644
+--- a/Source/Core/Core/HW/SI/SI_DeviceGBALink.h
++++ b/Source/Core/Core/HW/SI/SI_DeviceGBALink.h
+@@ -51,6 +51,14 @@ private:
+   int m_owner = 0;        // of the command in flight: 0 nobody, 1 this machine, 2 another machine
+   int m_link_device = 0;  // which adapter (the local pad number, as the GBA's keys use)
+   bool m_started = false;
++  // No GBA on the adapter (switched off, or not yet at its link screen): every command would wait
++  // out the adapter's ~11 ms timeout, which slows the emulated game, and in a room everyone else
++  // with it. After a stretch of silence the commands stop going to the adapter and only a probe
++  // every 100 ms does, until a GBA answers.
++  bool m_gba_absent = false;
++  u32 m_silent_streak = 0;
++  std::chrono::steady_clock::time_point m_last_answer = std::chrono::steady_clock::now();
++  std::chrono::steady_clock::time_point m_last_probe{};
+ 
+   // Netplay: what the game hears comes from the lag model. Model index i is
+   // command number i + 1 (m_seq) on every machine.
+-- 
+2.43.0
+
