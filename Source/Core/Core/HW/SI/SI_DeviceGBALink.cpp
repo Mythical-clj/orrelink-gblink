@@ -231,7 +231,18 @@ int CSIDevice_GBALink::RunBuffer(u8* buffer, int request_length)
     }
 #ifdef ORRELINK_JOYBUS
     if (m_owner == 1 && m_link_device >= 0)
-      m_started = GBLink::Manager::Get().JoyBegin(m_link_device, buffer, tx_len, m_rx_len);
+    {
+      bool send = true;
+      if (m_gba_absent)
+      {
+        const auto now = std::chrono::steady_clock::now();
+        send = now - m_last_probe >= std::chrono::milliseconds(250);
+        if (send)
+          m_last_probe = now;
+      }
+      if (send)
+        m_started = GBLink::Manager::Get().JoyBegin(m_link_device, buffer, tx_len, m_rx_len);
+    }
 #else
     (void)tx_len;
 #endif
@@ -276,6 +287,27 @@ int CSIDevice_GBALink::RunBuffer(u8* buffer, int request_length)
 #endif
       if (got != m_rx_len)
         got = -1;  // a short reply is no reply, on every machine
+#ifdef ORRELINK_JOYBUS
+      if (m_started)
+      {
+        const auto now = std::chrono::steady_clock::now();
+        if (got > 0)
+        {
+          if (m_gba_absent)
+            JoyLog(fmt::format("joybus port {}: a GBA is answering again", m_device_number + 1));
+          m_gba_absent = false;
+          m_silent_streak = 0;
+          m_last_answer = now;
+        }
+        else if (++m_silent_streak >= 4 && !m_gba_absent &&
+                 now - m_last_answer >= std::chrono::milliseconds(150))
+        {
+          m_gba_absent = true;
+          JoyLog(fmt::format("joybus port {}: no GBA answering, probing every 250 ms",
+                             m_device_number + 1));
+        }
+      }
+#endif
       real.len = static_cast<s8>(got);
       if (got > 0)
         std::copy(rx, rx + got, real.data.begin());

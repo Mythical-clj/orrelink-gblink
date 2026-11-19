@@ -51,6 +51,14 @@ private:
   int m_owner = 0;        // of the command in flight: 0 nobody, 1 this machine, 2 another machine
   int m_link_device = 0;  // which adapter (the local pad number, as the GBA's keys use)
   bool m_started = false;
+  // No GBA on the adapter (switched off, or not yet at its link screen): every command would wait
+  // out the adapter's ~11 ms timeout, which slows the emulated game, and in a room everyone else
+  // with it. After a stretch of silence the commands stop going to the adapter and only a probe
+  // every 250 ms does, until a GBA answers.
+  bool m_gba_absent = false;
+  u32 m_silent_streak = 0;
+  std::chrono::steady_clock::time_point m_last_answer = std::chrono::steady_clock::now();
+  std::chrono::steady_clock::time_point m_last_probe{};
 
   // Netplay: what the game hears comes from the lag model. Model index i is
   // command number i + 1 (m_seq) on every machine.
