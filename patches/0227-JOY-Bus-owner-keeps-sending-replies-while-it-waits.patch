@@ -1,0 +1,173 @@
+From 2fab09ec2f5aebeccdd767a4c266b3d599255ca8 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 18 Nov 2026 20:34:46 -0600
+Subject: [PATCH] JOY Bus: a room's owner keeps sending its replies while it
+ waits for another machine's
+
+With replies pipelined, an owner only sent a reply when its next command on that port came
+along. Two machines each waiting on the other's port could then wait on each other (an ~11 s
+stall, then the game gave up). The wait for a remote reply now pumps the owner's ready replies.
+---
+ Source/Core/Core/HW/SI/SI_DeviceGBALink.cpp | 22 ++++++++++++++++++++-
+ Source/Core/Core/NetPlayClient.cpp          | 21 ++++++++++++++++----
+ Source/Core/Core/NetPlayClient.h            |  3 ++-
+ Source/Core/Core/NetPlayProto.h             |  5 ++++-
+ 4 files changed, 44 insertions(+), 7 deletions(-)
+
+diff --git a/Source/Core/Core/HW/SI/SI_DeviceGBALink.cpp b/Source/Core/Core/HW/SI/SI_DeviceGBALink.cpp
+index a8a252956..e201b155a 100644
+--- a/Source/Core/Core/HW/SI/SI_DeviceGBALink.cpp
++++ b/Source/Core/Core/HW/SI/SI_DeviceGBALink.cpp
+@@ -10,6 +10,8 @@
+ #include <fmt/format.h>
+ 
+ #include <fstream>
++#include <functional>
++#include <vector>
+ #include <mutex>
+ 
+ #include "Common/FileUtil.h"
+@@ -28,6 +30,9 @@ namespace SerialInterface
+ {
+ namespace
+ {
++// The owners of real GBAs (pipelined) on this machine. Only the CPU thread touches it.
++std::vector<CSIDevice_GBALink*> s_pipelined_owners;
++
+ void JoyLog(const std::string& line)
+ {
+ #ifdef ORRELINK_JOYBUS
+@@ -175,6 +180,9 @@ CSIDevice_GBALink::CSIDevice_GBALink(Core::System& system, SIDevices device, int
+ 
+ CSIDevice_GBALink::~CSIDevice_GBALink()
+ {
++  s_pipelined_owners.erase(
++      std::remove(s_pipelined_owners.begin(), s_pipelined_owners.end(), this),
++      s_pipelined_owners.end());
+ #ifdef ORRELINK_JOYBUS
+   for (const Inflight& f : m_inflight)
+   {
+@@ -374,6 +382,11 @@ int CSIDevice_GBALink::RunBuffer(u8* buffer, int request_length)
+     {
+       if (m_owner == 1 && !pipelined)
+         m_real.push_back(real);
++      if (pipelined && std::find(s_pipelined_owners.begin(), s_pipelined_owners.end(), this) ==
++                           s_pipelined_owners.end())
++      {
++        s_pipelined_owners.push_back(this);
++      }
+       const auto fetch = [this](u32 index) {
+         JoyBusLagModel::Reply r;
+         r.len = -1;
+@@ -388,7 +401,14 @@ int CSIDevice_GBALink::RunBuffer(u8* buffer, int request_length)
+         const auto t0 = std::chrono::steady_clock::now();
+         int len = -1;
+         u8 data[5] = {};
+-        if (NetPlay::WaitJoyReply(m_device_number, index + 1, &len, data) && len > 0 && len <= 5)
++        // While this machine waits for another's reply, its own replies that are in go out: the
++        // other machine may be waiting for exactly those (each side behind the other's wait).
++        static const std::function<void()> pump = [] {
++          for (CSIDevice_GBALink* owner : s_pipelined_owners)
++            owner->CollectReady();
++        };
++        if (NetPlay::WaitJoyReply(m_device_number, index + 1, &len, data, &pump) && len > 0 &&
++            len <= 5)
+         {
+           r.len = static_cast<s8>(len);
+           std::copy(data, data + len, r.data.begin());
+diff --git a/Source/Core/Core/NetPlayClient.cpp b/Source/Core/Core/NetPlayClient.cpp
+index 4243107d0..34e3398a0 100644
+--- a/Source/Core/Core/NetPlayClient.cpp
++++ b/Source/Core/Core/NetPlayClient.cpp
+@@ -4649,7 +4649,8 @@ void NetPlayClient::OnJoyReply(sf::Packet& packet)
+ // called from ---CPU--- thread
+ // The reply to the port's command number |seq| (from 1). Replies arrive in order and are kept,
+ // so any one that has arrived can be asked for again.
+-bool NetPlayClient::WaitJoyReply(int port, u32 seq, int* len, u8* data)
++bool NetPlayClient::WaitJoyReply(int port, u32 seq, int* len, u8* data,
++                                 const std::function<void()>* pump)
+ {
+   if (port < 0 || static_cast<size_t>(port) >= m_joy_replies.size() || seq == 0)
+     return false;
+@@ -4659,7 +4660,19 @@ bool NetPlayClient::WaitJoyReply(int port, u32 seq, int* len, u8* data)
+   {
+     if (!m_is_running.IsSet() || PadOwnerHasLeftRoom(port))
+       return false;
+-    m_joy_cv.wait_for(lk, std::chrono::milliseconds(20));
++    if (pump)
++    {
++      lk.unlock();
++      (*pump)();
++      lk.lock();
++      if (replies.size() >= seq)
++        break;
++      m_joy_cv.wait_for(lk, std::chrono::milliseconds(1));
++    }
++    else
++    {
++      m_joy_cv.wait_for(lk, std::chrono::milliseconds(20));
++    }
+   }
+   const JoyReplyEntry& entry = replies[seq - 1];
+   if (entry.seq != seq)
+@@ -4776,11 +4789,11 @@ void SendJoyReply(int port, u32 seq, int len, const u8* data)
+     netplay_client->SendJoyReply(port, seq, len, data);
+ }
+ 
+-bool WaitJoyReply(int port, u32 seq, int* len, u8* data)
++bool WaitJoyReply(int port, u32 seq, int* len, u8* data, const std::function<void()>* pump)
+ {
+   // Not under crit_netplay_client: this waits for the network, and stopping must not wait for it.
+   NetPlayClient* const client = netplay_client;
+-  return client && client->WaitJoyReply(port, seq, len, data);
++  return client && client->WaitJoyReply(port, seq, len, data, pump);
+ }
+ 
+ bool LocalGcPadPlays(int local_pad)
+diff --git a/Source/Core/Core/NetPlayClient.h b/Source/Core/Core/NetPlayClient.h
+index 6b6cc54fc..c3e55a714 100644
+--- a/Source/Core/Core/NetPlayClient.h
++++ b/Source/Core/Core/NetPlayClient.h
+@@ -3,6 +3,7 @@
+ 
+ #pragma once
+ 
++#include <functional>
+ #include <SFML/Network/Packet.hpp>
+ #include <array>
+ #include <atomic>
+@@ -312,7 +313,7 @@ public:
+ 
+   // Real GBAs on GB-Link adapters (NetPlay::SendJoyReply / WaitJoyReply).
+   void SendJoyReply(int port, u32 seq, int len, const u8* data);
+-  bool WaitJoyReply(int port, u32 seq, int* len, u8* data);
++  bool WaitJoyReply(int port, u32 seq, int* len, u8* data, const std::function<void()>* pump = nullptr);
+   const PadMappingArray& GetWiimoteMapping() const;
+ 
+   void AdjustPadBufferSize(unsigned int size);
+diff --git a/Source/Core/Core/NetPlayProto.h b/Source/Core/Core/NetPlayProto.h
+index 98cb667fe..ae46f46b3 100644
+--- a/Source/Core/Core/NetPlayProto.h
++++ b/Source/Core/Core/NetPlayProto.h
+@@ -3,6 +3,7 @@
+ 
+ #pragma once
+ 
++#include <functional>
+ #include <array>
+ #include <string>
+ 
+@@ -388,7 +389,9 @@ int JoyOwner(int port);
+ // The owner's side: the reply to the port's command number `seq` (len < 0: no reply), for the room.
+ void SendJoyReply(int port, u32 seq, int len, const u8* data);
+ // Everyone else's: waits for that reply. False when the game stopped or the owner left.
+-bool WaitJoyReply(int port, u32 seq, int* len, u8* data);
++// |pump|, when given, is run about every millisecond while waiting: the owner's own replies still
++// on their way must not sit behind a wait for someone else's.
++bool WaitJoyReply(int port, u32 seq, int* len, u8* data, const std::function<void()>* pump = nullptr);
+ // Whether this machine's local GameCube pad `local_pad` plays a GameCube port in the running
+ // netplay game (a joiner's never does: its only ports are GBAs); outside a netplay game, true.
+ // Lock-free, like GbaInputPadFor.
+-- 
+2.43.0
+
