@@ -1,0 +1,275 @@
+From aa07d6b21dea7fb87462db046d481b0fecdddc58 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 20 Nov 2026 02:29:50 -0600
+Subject: [PATCH] GB-Link: Local 2-player tab, two real GBAs on two adapters
+
+A tab beside Setup in the launcher's GB-Link section: pick which adapter plays on port 2 and port 3,
+swap them, and boot Pokemon XD with both GBAs real. The choice is stored by USB port; the other
+adapters are switched off. The manager logs which adapter plays which port.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01764cASb9aVVk2m6JupRMj5
+---
+ .../DolphinQt/XDNetplay/XDLauncherDialog.cpp  | 158 +++++++++++++++++-
+ .../DolphinQt/XDNetplay/XDLauncherDialog.h    |   9 +
+ .../Core/InputCommon/GBLink/GBLinkManager.cpp |   5 +
+ .../Core/InputCommon/GBLink/GBLinkManager.h   |   1 +
+ 4 files changed, 171 insertions(+), 2 deletions(-)
+
+diff --git a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
+index 2cbf3d046..8dddeab12 100644
+--- a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
++++ b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.cpp
+@@ -49,6 +49,8 @@
+ #include <QTimer>
+ #include <QShowEvent>
+ #include <QSignalBlocker>
++#include <QStringList>
++#include <QTabWidget>
+ #include <QVBoxLayout>
+ #include <QUrl>
+ #include <QWidget>
+@@ -466,7 +468,6 @@ void XDLauncherDialog::CreateMainLayout()
+   m_gblink_toggle->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+   m_gblink_toggle->setArrowType(Qt::RightArrow);
+   auto* gblink_box = new QWidget;
+-  m_gblink_section = gblink_box;
+   auto* gblink_layout = new QGridLayout;
+   gblink_layout->setContentsMargins(0, 0, 0, 0);
+   // Everything that belongs to the integrated (mGBA) GBAs lives in one section that folds away:
+@@ -588,8 +589,46 @@ void XDLauncherDialog::CreateMainLayout()
+   gblink_layout->addWidget(m_gblink_joybus_check, 1, 0);
+   gblink_layout->setColumnStretch(0, 1);
+   gblink_box->setLayout(gblink_layout);
++  // The GB-Link section has two tabs: the setup above, and two real GBAs played on this PC.
++  auto* local_page = new QWidget;
++  {
++    auto* local_layout = new QGridLayout(local_page);
++    m_local_status = MakeNoteLabel(QString());
++    local_layout->addWidget(m_local_status, 0, 0, 1, 3);
++    local_layout->addWidget(new QLabel(tr("Player 1 (port 2):")), 1, 0);
++    m_local_p1_combo = new QComboBox;
++    m_local_p1_combo->setToolTip(tr("The GB-Link whose GBA plays on GameCube port 2"));
++    local_layout->addWidget(m_local_p1_combo, 1, 1);
++    local_layout->addWidget(new QLabel(tr("Player 2 (port 3):")), 2, 0);
++    m_local_p2_combo = new QComboBox;
++    m_local_p2_combo->setToolTip(tr("The GB-Link whose GBA plays on GameCube port 3"));
++    local_layout->addWidget(m_local_p2_combo, 2, 1);
++    m_local_swap_button = new NonDefaultQPushButton(tr("Swap"));
++    m_local_swap_button->setToolTip(tr("Swap the two players"));
++    local_layout->addWidget(m_local_swap_button, 1, 2, 2, 1);
++    m_local_boot_button = new NonDefaultQPushButton(tr("Boot Pokémon XD (local 2-player)"));
++    m_local_boot_button->setToolTip(
++        tr("Both GBAs plug into this PC. Each takes the program over JOY Bus and plays from its "
++           "own cartridge. Power each GBA on when the game says to."));
++    local_layout->addWidget(m_local_boot_button, 3, 0, 1, 3);
++    local_layout->setColumnStretch(1, 1);
++    connect(m_local_p1_combo, &QComboBox::activated, this, [this](int) { ApplyLocalPlayers(); });
++    connect(m_local_p2_combo, &QComboBox::activated, this, [this](int) { ApplyLocalPlayers(); });
++    connect(m_local_swap_button, &QPushButton::clicked, this, [this] {
++      const int a = m_local_p1_combo->currentIndex();
++      m_local_p1_combo->setCurrentIndex(m_local_p2_combo->currentIndex());
++      m_local_p2_combo->setCurrentIndex(a);
++      ApplyLocalPlayers();
++    });
++    connect(m_local_boot_button, &QPushButton::clicked, this,
++            &XDLauncherDialog::OnBootLocalTwoPlayer);
++  }
++  auto* gblink_tabs = new QTabWidget;
++  gblink_tabs->addTab(gblink_box, tr("Setup"));
++  gblink_tabs->addTab(local_page, tr("Local 2-player"));
++  m_gblink_section = gblink_tabs;
+   layout->addWidget(m_gblink_toggle);
+-  layout->addWidget(gblink_box);
++  layout->addWidget(gblink_tabs);
+   layout->addWidget(m_mgba_toggle);
+   layout->addWidget(m_mgba_section);
+ 
+@@ -1469,6 +1508,51 @@ void XDLauncherDialog::RefreshGbLinkStatus()
+ #ifdef ORRELINK_GBLINK
+   const GBLink::Status status = GBLink::Manager::Get().GetStatus();
+   m_gblink_status->setText(QString::fromStdString(status.text));
++  {
++    // The Local 2-player tab: list the adapters by USB port, keep the player choices.
++    const std::vector<GBLink::AdapterInfo> found = GBLink::Manager::Get().GetAdapters();
++    QStringList keys;
++    for (const GBLink::AdapterInfo& a : found)
++      keys << QString::fromStdString(a.key);
++    if (keys != m_local_keys)
++    {
++      m_local_keys = keys;
++      const QSignalBlocker b1(m_local_p1_combo), b2(m_local_p2_combo);
++      m_local_p1_combo->clear();
++      m_local_p2_combo->clear();
++      for (const GBLink::AdapterInfo& a : found)
++      {
++        const QString text = tr("GB-Link %1 (USB %2)")
++                                 .arg(a.index + 1)
++                                 .arg(QString::fromStdString(a.key));
++        m_local_p1_combo->addItem(text, QString::fromStdString(a.key));
++        m_local_p2_combo->addItem(text, QString::fromStdString(a.key));
++      }
++      const QString s1 = QSettings().value(QStringLiteral("xdnetplay/gblink/local/p1")).toString();
++      const QString s2 = QSettings().value(QStringLiteral("xdnetplay/gblink/local/p2")).toString();
++      int i1 = m_local_p1_combo->findData(s1);
++      int i2 = m_local_p2_combo->findData(s2);
++      if (i1 < 0 || i2 < 0 || i1 == i2)
++      {
++        i1 = 0;
++        i2 = found.size() > 1 ? 1 : 0;
++      }
++      m_local_p1_combo->setCurrentIndex(i1);
++      m_local_p2_combo->setCurrentIndex(i2);
++    }
++    const int ready = GBLink::Manager::Get().JoyReadyCount();
++    m_local_status->setText(
++        found.size() < 2 ?
++            tr("Plug in two GB-Link adapters (found %1).").arg(static_cast<int>(found.size())) :
++            ready < 2 ? tr("%1 GB-Links found; %2 in JOY Bus mode. Turn on \"Real GBA\" on the "
++                           "Setup tab and wait a few seconds.")
++                              .arg(static_cast<int>(found.size()))
++                              .arg(ready) :
++                        tr("%1 GB-Links ready. Player 1 plays on port 2, player 2 on port 3.")
++                              .arg(ready));
++    m_local_boot_button->setEnabled(found.size() >= 2);
++    m_local_swap_button->setEnabled(found.size() >= 2);
++  }
+   {
+     const std::vector<GBLink::AdapterInfo> adapters = GBLink::Manager::Get().GetAdapters();
+     for (int i = 0; i < 4; i++)
+@@ -2129,6 +2213,76 @@ void XDLauncherDialog::OnBootSolo()
+   emit BootXD(QString::fromStdString(game->GetFilePath()));
+ }
+ 
++// Gives the two chosen adapters ports 2 and 3 (the GBA sockets of a link battle) and switches
++// every other adapter off, so that each player's GBA answers on its own port.
++bool XDLauncherDialog::ApplyLocalPlayers()
++{
++#ifdef ORRELINK_GBLINK
++  const QString k1 = m_local_p1_combo->currentData().toString();
++  const QString k2 = m_local_p2_combo->currentData().toString();
++  if (k1.isEmpty() || k2.isEmpty() || k1 == k2)
++  {
++    m_local_status->setText(tr("Pick a different GB-Link for each player."));
++    return false;
++  }
++  for (const GBLink::AdapterInfo& a : GBLink::Manager::Get().GetAdapters())
++  {
++    const QString key = QString::fromStdString(a.key);
++    const int setting = key == k1 ? 2 : key == k2 ? 3 : -1;
++    GBLink::Manager::Get().SetPortSetting(a.key, setting);
++    QSettings().setValue(QStringLiteral("xdnetplay/gblink/port/%1").arg(key), setting);
++  }
++  QSettings().setValue(QStringLiteral("xdnetplay/gblink/local/p1"), k1);
++  QSettings().setValue(QStringLiteral("xdnetplay/gblink/local/p2"), k2);
++  return true;
++#else
++  return false;
++#endif
++}
++
++void XDLauncherDialog::OnBootLocalTwoPlayer()
++{
++#ifdef ORRELINK_GBLINK
++  if (GBLink::Manager::Get().GetAdapters().size() < 2)
++  {
++    ModalMessageBox::warning(this, tr("OrreLink"),
++                             tr("Two GB-Link adapters are needed. Plug in the second one."));
++    return;
++  }
++  if (XDNetplay::IsSoloMultiLaunch())
++  {
++    ModalMessageBox::warning(
++        this, tr("OrreLink"),
++        tr("Local 2-player uses ports 2 and 3. Turn off the Multi battle format first."));
++    return;
++  }
++  if (!ApplyLocalPlayers())
++  {
++    ModalMessageBox::warning(this, tr("OrreLink"),
++                             tr("Pick a different GB-Link for each player."));
++    return;
++  }
++  if (!Config::Get(Config::MAIN_GBLINK_JOYBUS))
++  {
++    // The adapters switch to JOY Bus mode a few seconds after this.
++    m_gblink_joybus_check->setChecked(true);
++    ModalMessageBox::information(
++        this, tr("OrreLink"),
++        tr("The GB-Links are switching to JOY Bus mode. Press the button again in a few seconds."));
++    return;
++  }
++  if (GBLink::Manager::Get().JoyReadyCount() < 2)
++  {
++    ModalMessageBox::warning(
++        this, tr("OrreLink"),
++        tr("Both GB-Links must be in JOY Bus mode (working firmware on both). Wait a few seconds, "
++           "or check the status above."));
++    return;
++  }
++  OnBootSolo();
++#endif
++}
++
+ void XDLauncherDialog::OnHost()
+ {
+   const auto game = FindXdGame();
+diff --git a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.h b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.h
+index 2ec95b04e..e74a8043d 100644
+--- a/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.h
++++ b/Source/Core/DolphinQt/XDNetplay/XDLauncherDialog.h
+@@ -113,6 +113,8 @@ private:
+   void RefreshGbLinkStatus();
+ 
+   void OnBootSolo();
++  void OnBootLocalTwoPlayer();
++  bool ApplyLocalPlayers();
+   void OnHost();
+   void OnJoin();
+   void OnSearchForMatch();
+@@ -151,6 +153,13 @@ private:
+   QCheckBox* m_gblink_full_read_check = nullptr;
+   QCheckBox* m_gblink_menu_check = nullptr;
+   QCheckBox* m_gblink_joybus_check = nullptr;
++  // The "Local 2-player" tab: two real GBAs on two GB-Link adapters, one PC.
++  QLabel* m_local_status = nullptr;
++  QComboBox* m_local_p1_combo = nullptr;
++  QComboBox* m_local_p2_combo = nullptr;
++  QPushButton* m_local_swap_button = nullptr;
++  QPushButton* m_local_boot_button = nullptr;
++  QStringList m_local_keys;  // the adapters the two combos list, by USB port
+   QToolButton* m_gblink_toggle = nullptr;
+   QWidget* m_gblink_section = nullptr;
+   QToolButton* m_mgba_toggle = nullptr;
+diff --git a/Source/Core/InputCommon/GBLink/GBLinkManager.cpp b/Source/Core/InputCommon/GBLink/GBLinkManager.cpp
+index 3d0f26660..106f3cba4 100644
+--- a/Source/Core/InputCommon/GBLink/GBLinkManager.cpp
++++ b/Source/Core/InputCommon/GBLink/GBLinkManager.cpp
+@@ -1373,7 +1373,12 @@ void Manager::SetPortSetting(const std::string& key, int setting)
+   {
+     Link* l = slot.load();
+     if (l && l->Key() == key)
++    {
++      if (l->PortSetting() != setting)
++        l->Log(fmt::format("adapter on USB port {} now plays GBA port {} (setting {})", key,
++                               EffectivePort(setting, 0), setting));
+       l->SetPortSetting(setting);
++    }
+   }
+ }
+ 
+diff --git a/Source/Core/InputCommon/GBLink/GBLinkManager.h b/Source/Core/InputCommon/GBLink/GBLinkManager.h
+index bb1c49be1..8da440086 100644
+--- a/Source/Core/InputCommon/GBLink/GBLinkManager.h
++++ b/Source/Core/InputCommon/GBLink/GBLinkManager.h
+@@ -83,6 +83,7 @@ public:
+ 
+   // Which emulated GBA this adapter plays: -2 automatic, -1 none, 0 every GBA, 1-4 that port.
+   void SetPortSetting(int setting) { m_port_setting = setting; }
++  void Log(const std::string& s) const { LogLine(s); }
+   int PortSetting() const { return m_port_setting; }
+ 
+   bool WantsMirrorFrames() const { return m_pad_live; }
+-- 
+2.43.0
+
