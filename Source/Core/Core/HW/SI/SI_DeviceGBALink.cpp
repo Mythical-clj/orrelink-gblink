@@ -242,10 +242,12 @@ int CSIDevice_GBALink::RunBuffer(u8* buffer, int request_length)
       {
         const bool lag_model = Config::Get(Config::MAIN_GBLINK_JOY_LAGMODEL);
         m_model = std::make_unique<JoyBusLagModel>(
-            u64{m_system.GetSystemTimers().GetTicksPerSecond()} * kLagMs / 1000, !lag_model);
-        JoyLog(fmt::format("joybus port {}: lag model {}, {} ms; pipeline {}", m_device_number + 1,
+            u64{m_system.GetSystemTimers().GetTicksPerSecond()} * kLagMs / 1000, !lag_model,
+            Config::Get(Config::MAIN_GBLINK_JOY_QUIET));
+        JoyLog(fmt::format("joybus port {}: lag model {}, {} ms; pipeline {}; quiet replies {}", m_device_number + 1,
                            lag_model ? "on" : "OFF (every command waits for its real reply)",
-                           kLagMs, m_pipeline ? "on" : "OFF"));
+                           kLagMs, m_pipeline ? "on" : "OFF",
+                           Config::Get(Config::MAIN_GBLINK_JOY_QUIET) ? "on" : "off"));
       }
     }
     if (m_model)

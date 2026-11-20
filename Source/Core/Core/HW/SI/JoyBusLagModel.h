@@ -29,6 +29,10 @@
 //     A real reply that turns out different stops this at once (the model then waits, below).
 //  C. Anything else waits for the real reply to that very command: new commands, their data,
 //     the first repetitions after one.
+//  D. (before C) Quiet replies: a write or a status to which the GBA has said "nothing for you"
+//     (no receive flag) eight times running is answered the same, since a flag it raises later
+//     stays raised and the game sees it one lag later. Replayed against five local sessions
+//     this takes the commands that wait from about 10,000 to about 1,500 in a hundred thousand.
 //
 // No Dolphin types in here, so that it can be run against a recorded session (JoyTrace.txt).
 
@@ -56,8 +60,8 @@ public:
   using RealFn = std::function<Reply(uint32_t index)>;
 
   // |wait_only|: no repetition or upload shortcuts, every command waits for its real reply.
-  explicit JoyBusLagModel(uint64_t lag_ticks, bool wait_only = false)
-      : m_lag(lag_ticks), m_wait_only(wait_only)
+  explicit JoyBusLagModel(uint64_t lag_ticks, bool wait_only = false, bool quiet = true)
+      : m_lag(lag_ticks), m_wait_only(wait_only), m_quiet_on(quiet)
   {
   }
 
@@ -91,6 +95,7 @@ public:
     while (m_horizon < k && m_entries[m_horizon].ticks + m_lag <= e.ticks)
     {
       Learn(m_horizon, real);
+      NoteQuiet(m_horizon);
       IndexContext(m_horizon);
       m_horizon++;
     }
@@ -101,6 +106,8 @@ public:
     if (!m_wait_only && TryLagged(k, &out, &e.source))
       how = How::Lagged;
     else if (!m_wait_only && TryPredicted(k, &out))
+      how = How::Predicted;
+    else if (!m_wait_only && m_quiet_on && TryQuiet(k, &out))
       how = How::Predicted;
     else
       out = Learn(k, real);
@@ -289,8 +296,56 @@ private:
     return true;
   }
 
+  // D: quiet replies. A write or a status to which the GBA has said "nothing for you" (no
+  // receive flag) many times running, and still does, is answered the same without waiting: if
+  // it does raise the flag, the flag stays raised, and the game sees it one lag later.
+  static constexpr uint32_t kQuietRuns = 8;
+  struct Quiet
+  {
+    Reply last;
+    uint32_t same = 0;
+    uint32_t cooldown = 0;
+  };
+  static bool HasRecv(uint8_t cmd, const Reply& r)
+  {
+    if (cmd == kWrite)
+      return r.len < 1 || (r.data[0] & 0x08) != 0;
+    return r.len < 3 || (r.data[2] & 0x08) != 0;
+  }
+  void NoteQuiet(uint32_t i)
+  {
+    const Entry& e = m_entries[i];
+    if (e.cmd != kWrite && e.cmd != kStatus)
+      return;
+    Quiet& q = m_quiet[e.cmd == kWrite ? 1 : 0];
+    if (q.cooldown)
+      q.cooldown--;
+    if (e.real == q.last)
+      q.same++;
+    else
+    {
+      q.last = e.real;
+      q.same = 1;
+    }
+    if (!(e.virt == e.real))
+      q.cooldown = 32;  // it guessed wrong once: wait for a while
+  }
+  bool TryQuiet(uint32_t k, Reply* out) const
+  {
+    const Entry& e = m_entries[k];
+    if (e.cmd != kWrite && e.cmd != kStatus)
+      return false;
+    const Quiet& q = m_quiet[e.cmd == kWrite ? 1 : 0];
+    if (q.same < kQuietRuns || q.cooldown || q.last.len < 1 || HasRecv(e.cmd, q.last))
+      return false;
+    *out = q.last;
+    return true;
+  }
+  std::array<Quiet, 2> m_quiet{};
+
   const uint64_t m_lag;
   const bool m_wait_only;
+  const bool m_quiet_on;
   std::vector<Entry> m_entries;
   uint32_t m_horizon = 0;  // commands before this one are older than the lag and known
   uint32_t m_run = 0;

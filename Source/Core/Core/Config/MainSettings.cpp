@@ -445,6 +445,8 @@ const Info<bool> MAIN_GBLINK_JOYBUS{{System::Main, "XDNetplay", "GBLinkJoybus"},
 const Info<bool> MAIN_GBLINK_JOY_PIPELINE{{System::Main, "XDNetplay", "GBLinkJoyPipeline"}, false};
 // false: in a room every command waits for the real GBA's reply (no lag model), as in the first builds.
 const Info<bool> MAIN_GBLINK_JOY_LAGMODEL{{System::Main, "XDNetplay", "GBLinkJoyLagModel"}, true};
+// The lag model answers a long run of "nothing for you" replies without waiting (rule D).
+const Info<bool> MAIN_GBLINK_JOY_QUIET{{System::Main, "XDNetplay", "GBLinkJoyQuiet"}, true};
 const Info<int> MAIN_XD_IMPORTED_GAME_2{{System::Main, "XDNetplay", "ImportedGame2"}, 0};
 const Info<int> MAIN_XD_IMPORTED_GAME_3{{System::Main, "XDNetplay", "ImportedGame3"}, 0};
 const Info<std::string> MAIN_XD_ROM_EMERALD{{System::Main, "XDNetplay", "RomEmerald"}, ""};
