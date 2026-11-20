@@ -1,0 +1,158 @@
+From 9c87582ebc2da28afa11f4f220561d5a72647be0 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 19 Nov 2026 21:21:14 -0600
+Subject: [PATCH] JOY Bus rooms: pipeline off by default, lag model can be
+ turned off, last commands shown when the GBA goes silent
+
+GBLinkJoyPipeline now defaults to false; GBLinkJoyLagModel=false makes every command in a
+room wait for its real reply. The last 24 commands the game heard are logged when the GBA stops
+answering.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01764cASb9aVVk2m6JupRMj5
+---
+ Source/Core/Core/Config/MainSettings.cpp    |  4 +++-
+ Source/Core/Core/Config/MainSettings.h      |  1 +
+ Source/Core/Core/HW/SI/JoyBusLagModel.h     | 11 ++++++---
+ Source/Core/Core/HW/SI/SI_DeviceGBALink.cpp | 25 +++++++++++++++++++--
+ Source/Core/Core/HW/SI/SI_DeviceGBALink.h   |  2 ++
+ 5 files changed, 37 insertions(+), 6 deletions(-)
+
+diff --git a/Source/Core/Core/Config/MainSettings.cpp b/Source/Core/Core/Config/MainSettings.cpp
+index 562c9c533..6c5c0716e 100644
+--- a/Source/Core/Core/Config/MainSettings.cpp
++++ b/Source/Core/Core/Config/MainSettings.cpp
+@@ -442,7 +442,9 @@ const Info<int> MAIN_XD_TIMER_GAME_MINUTES{{System::Main, "XDNetplay", "TimerGam
+ const Info<std::string> MAIN_XD_IMPORTED_SAVE_2{{System::Main, "XDNetplay", "ImportedSave2"}, ""};
+ const Info<std::string> MAIN_XD_IMPORTED_SAVE_3{{System::Main, "XDNetplay", "ImportedSave3"}, ""};
+ const Info<bool> MAIN_GBLINK_JOYBUS{{System::Main, "XDNetplay", "GBLinkJoybus"}, true};
+-const Info<bool> MAIN_GBLINK_JOY_PIPELINE{{System::Main, "XDNetplay", "GBLinkJoyPipeline"}, true};
++const Info<bool> MAIN_GBLINK_JOY_PIPELINE{{System::Main, "XDNetplay", "GBLinkJoyPipeline"}, false};
++// false: in a room every command waits for the real GBA's reply (no lag model), as in the first builds.
++const Info<bool> MAIN_GBLINK_JOY_LAGMODEL{{System::Main, "XDNetplay", "GBLinkJoyLagModel"}, true};
+ const Info<int> MAIN_XD_IMPORTED_GAME_2{{System::Main, "XDNetplay", "ImportedGame2"}, 0};
+ const Info<int> MAIN_XD_IMPORTED_GAME_3{{System::Main, "XDNetplay", "ImportedGame3"}, 0};
+ const Info<std::string> MAIN_XD_ROM_EMERALD{{System::Main, "XDNetplay", "RomEmerald"}, ""};
+diff --git a/Source/Core/Core/Config/MainSettings.h b/Source/Core/Core/Config/MainSettings.h
+index 05446780d..b8be1d717 100644
+--- a/Source/Core/Core/Config/MainSettings.h
++++ b/Source/Core/Core/Config/MainSettings.h
+@@ -297,6 +297,7 @@ extern const Info<std::string> MAIN_XD_IMPORTED_SAVE_3;  // GBA port 3 (device 2
+ // firmware), instead of the integrated GBAs. A netplay room follows the host's setting.
+ extern const Info<bool> MAIN_GBLINK_JOYBUS;
+ extern const Info<bool> MAIN_GBLINK_JOY_PIPELINE;
++extern const Info<bool> MAIN_GBLINK_JOY_LAGMODEL;
+ extern const Info<int> MAIN_XD_IMPORTED_GAME_2;
+ extern const Info<int> MAIN_XD_IMPORTED_GAME_3;
+ // The Pokemon ROMs the launcher keeps for the emulated GBA ports (Emerald is the default; the others
+diff --git a/Source/Core/Core/HW/SI/JoyBusLagModel.h b/Source/Core/Core/HW/SI/JoyBusLagModel.h
+index df4d3ad25..bfecc18fb 100644
+--- a/Source/Core/Core/HW/SI/JoyBusLagModel.h
++++ b/Source/Core/Core/HW/SI/JoyBusLagModel.h
+@@ -55,7 +55,11 @@ public:
+   // real(index) returns the real reply to command |index|, waiting for it if it has not arrived.
+   using RealFn = std::function<Reply(uint32_t index)>;
+ 
+-  explicit JoyBusLagModel(uint64_t lag_ticks) : m_lag(lag_ticks) {}
++  // |wait_only|: no repetition or upload shortcuts, every command waits for its real reply.
++  explicit JoyBusLagModel(uint64_t lag_ticks, bool wait_only = false)
++      : m_lag(lag_ticks), m_wait_only(wait_only)
++  {
++  }
+ 
+   // The game sends command |cmd| (with |word| when it is a write) at emulated time |ticks|.
+   // Returns its index, to be given to Decide once.
+@@ -94,9 +98,9 @@ public:
+     How how = How::Waited;
+     Reply out;
+     e.source = k;
+-    if (TryLagged(k, &out, &e.source))
++    if (!m_wait_only && TryLagged(k, &out, &e.source))
+       how = How::Lagged;
+-    else if (TryPredicted(k, &out))
++    else if (!m_wait_only && TryPredicted(k, &out))
+       how = How::Predicted;
+     else
+       out = Learn(k, real);
+@@ -286,6 +290,7 @@ private:
+   }
+ 
+   const uint64_t m_lag;
++  const bool m_wait_only;
+   std::vector<Entry> m_entries;
+   uint32_t m_horizon = 0;  // commands before this one are older than the lag and known
+   uint32_t m_run = 0;
+diff --git a/Source/Core/Core/HW/SI/SI_DeviceGBALink.cpp b/Source/Core/Core/HW/SI/SI_DeviceGBALink.cpp
+index bb1e4e271..2f7c0562c 100644
+--- a/Source/Core/Core/HW/SI/SI_DeviceGBALink.cpp
++++ b/Source/Core/Core/HW/SI/SI_DeviceGBALink.cpp
+@@ -240,9 +240,12 @@ int CSIDevice_GBALink::RunBuffer(u8* buffer, int request_length)
+       const bool netplay = NetPlay::IsNetPlayRunning();
+       if (netplay && m_owner != 0)
+       {
++        const bool lag_model = Config::Get(Config::MAIN_GBLINK_JOY_LAGMODEL);
+         m_model = std::make_unique<JoyBusLagModel>(
+-            u64{m_system.GetSystemTimers().GetTicksPerSecond()} * kLagMs / 1000);
+-        JoyLog(fmt::format("joybus port {}: lag model on, {} ms", m_device_number + 1, kLagMs));
++            u64{m_system.GetSystemTimers().GetTicksPerSecond()} * kLagMs / 1000, !lag_model);
++        JoyLog(fmt::format("joybus port {}: lag model {}, {} ms; pipeline {}", m_device_number + 1,
++                           lag_model ? "on" : "OFF (every command waits for its real reply)",
++                           kLagMs, m_pipeline ? "on" : "OFF"));
+       }
+     }
+     if (m_model)
+@@ -464,6 +467,16 @@ int CSIDevice_GBALink::RunBuffer(u8* buffer, int request_length)
+     if (got <= 0)
+       m_stat_none++;
+     JoyTrace::Get().Add(m_device_number, m_timestamp_sent, m_tx[0], m_tx.data(), rx, got, note);
++    {
++      m_recent.push_back(
++          got > 0 ? fmt::format("{:02x} {:02x}{:02x}{:02x}{:02x} < {:02x}{:02x}{:02x}{:02x}{:02x}{}",
++                                m_tx[0], m_tx[1], m_tx[2], m_tx[3], m_tx[4], rx[0], rx[1], rx[2],
++                                rx[3], rx[4], note) :
++                    fmt::format("{:02x} {:02x}{:02x}{:02x}{:02x} < no reply{}", m_tx[0], m_tx[1],
++                                m_tx[2], m_tx[3], m_tx[4], note));
++      if (m_recent.size() > 24)
++        m_recent.pop_front();
++    }
+ 
+     // The first commands one by one (a status only when its reply changes), then the totals.
+     if (m_trace_left > 0)
+@@ -518,6 +531,14 @@ void CSIDevice_GBALink::NoteAnswer(bool sent, bool is_status, int got, const u8*
+       m_gba_absent = true;
+       JoyLog(fmt::format("joybus port {}: no GBA answering, probing every 250 ms",
+                          m_device_number + 1));
++      if (!m_recent.empty())
++      {
++        JoyLog(fmt::format("joybus port {}: the last {} commands the game heard (oldest first):",
++                           m_device_number + 1, m_recent.size()));
++        for (const std::string& line : m_recent)
++          JoyLog("  " + line);
++        m_recent.clear();
++      }
+     }
+   }
+   if (!is_status || got != 3)
+diff --git a/Source/Core/Core/HW/SI/SI_DeviceGBALink.h b/Source/Core/Core/HW/SI/SI_DeviceGBALink.h
+index ffc7fc516..45f582f70 100644
+--- a/Source/Core/Core/HW/SI/SI_DeviceGBALink.h
++++ b/Source/Core/Core/HW/SI/SI_DeviceGBALink.h
+@@ -7,6 +7,7 @@
+ #include <chrono>
+ #include <deque>
+ #include <memory>
++#include <string>
+ #include <vector>
+ 
+ #include "Common/CommonTypes.h"
+@@ -68,6 +69,7 @@ private:
+   bool ShouldHoldStatus() const;
+ 
+   std::deque<Inflight> m_inflight;
++  std::deque<std::string> m_recent;  // the last commands, shown when the GBA stops answering
+   bool m_pipeline = false;  // MAIN_GBLINK_JOY_PIPELINE, read when the device is created
+   u32 m_cur_id = 0;
+   bool m_held_status = false;  // this command's status was not sent
+-- 
+2.43.0
+
