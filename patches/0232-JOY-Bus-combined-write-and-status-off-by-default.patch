@@ -1,0 +1,32 @@
+From 9f87d4edad58e0a2873750df415e1d4b3455c3a2 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 20 Nov 2026 03:05:42 -0600
+Subject: [PATCH] JOY Bus: combined write and status is off unless
+ ORRELINK_COMBINE is set
+
+Test 19/21 logs: 0.81 ms a command against 0.45 in test 18, a 40 s upload instead of 25 s.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01764cASb9aVVk2m6JupRMj5
+---
+ Source/Core/InputCommon/GBLink/GBLinkManager.cpp | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/Source/Core/InputCommon/GBLink/GBLinkManager.cpp b/Source/Core/InputCommon/GBLink/GBLinkManager.cpp
+index 106f3cba4..d767a3d21 100644
+--- a/Source/Core/InputCommon/GBLink/GBLinkManager.cpp
++++ b/Source/Core/InputCommon/GBLink/GBLinkManager.cpp
+@@ -444,7 +444,9 @@ void Link::RunJoybus(UsbLink& usb)
+   uint8_t last_status[3] = {};
+   bool have_last_status = false;
+   // The status read just after a write, given once to the game's next status within 50 ms.
+-  static const bool combine = std::getenv("ORRELINK_NO_COMBINE") == nullptr;
++  // Off by default: on a real GBA the status straight after a write is not answered, and the wait
++  // made a program upload 15 s slower (test 19/21: 0.81 ms a command against 0.45).
++  static const bool combine = std::getenv("ORRELINK_COMBINE") != nullptr;
+   uint8_t saved_status[3] = {};
+   bool saved_ok = false;
+   auto saved_at = Clock::now();
+-- 
+2.43.0
+
