@@ -1,0 +1,45 @@
+From a5519c257ce22d9d48059740be20b079102a4cea Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 20 Nov 2026 03:08:39 -0600
+Subject: [PATCH] Local 2-player: no trainer model is forced when both GBAs are
+ real
+
+The cartridge's own trainer shows (Game default read the imported save, which a real GBA doesn't have).
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01764cASb9aVVk2m6JupRMj5
+---
+ Source/Core/UICommon/XDNetplay/BattleCustomizer.cpp | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/Source/Core/UICommon/XDNetplay/BattleCustomizer.cpp b/Source/Core/UICommon/XDNetplay/BattleCustomizer.cpp
+index 05192a16d9..e19a9a132c 100644
+--- a/Source/Core/UICommon/XDNetplay/BattleCustomizer.cpp
++++ b/Source/Core/UICommon/XDNetplay/BattleCustomizer.cpp
+@@ -28,6 +28,7 @@
+ 
+ #ifdef HAS_LIBMGBA
+ #include "Core/HW/GBACore.h"
++#include "Core/HW/SI/SI_Device.h"
+ #include "Core/HW/GBADetectLog.h"
+ #include "Core/HW/XDBattleRecorder.h"
+ #endif
+@@ -1278,6 +1279,15 @@ Selection ConfigSelection()
+   // guest's own submission decides, so this stays out of it.
+   if (sel.guest_model_fallback <= 0 && !IsNetplaySessionActive())
+     sel.guest_model_fallback = SaveImport::CartridgeModelForDevice(2);
++  // Two real GBAs on this PC (the launcher's Local 2-player): each plays with its own cartridge's
++  // trainer, which the game takes from the GBA itself, so no model is forced on either side.
++  if (!IsNetplaySessionActive() &&
++      Config::Get(Config::GetInfoForSIDevice(1)) == SerialInterface::SIDEVICE_GC_GBA_GBLINK &&
++      Config::Get(Config::GetInfoForSIDevice(2)) == SerialInterface::SIDEVICE_GC_GBA_GBLINK)
++  {
++    sel.host_model = 0;
++    sel.guest_model_fallback = 0;
++  }
+   sel.music = Config::Get(Config::MAIN_XD_STYLE_MUSIC);
+   sel.venue = Config::Get(Config::MAIN_XD_STYLE_VENUE);
+   return sel;
+-- 
+2.43.0
+
