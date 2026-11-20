@@ -125,6 +125,11 @@ private:
   // say why not. Used by AutoSubmitSaveTeam on joining a room.
   bool SendSaveTeam(bool announce_failures);
   void AutoSubmitSaveTeam(int role);
+  // A real GBA on a GB-Link plays this player's seat: the cartridge is the team, so nothing is
+  // submitted. The fallback reads the trainer and party from the cartridge and sends them as a
+  // loaded-in team (for a seat the other machines have to run themselves).
+  static bool HasRealGba();
+  void OnReadCartridgeTeam();
   bool HostWriteAllowed();
   void ApplyHostTeam(const std::string& showdown_text, const std::string& trainer_name,
                      bool raise_to_level_100);

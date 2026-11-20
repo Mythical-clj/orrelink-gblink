@@ -8,6 +8,7 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QClipboard>
+#include <QDateTime>
 #include <QComboBox>
 #include <QDialogButtonBox>
 #include <QFileDialog>
@@ -22,6 +23,7 @@
 #include <QMenu>
 #include <QPlainTextEdit>
 #include <QPointer>
+#include <QProgressDialog>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QSignalBlocker>
@@ -29,6 +31,7 @@
 #include <QSplitter>
 #include <QTableWidget>
 #include <QTextBrowser>
+#include <QTimer>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -45,6 +48,7 @@
 
 #include "Common/Config/Config.h"
 #include "Common/FileUtil.h"
+#include "Common/IOFile.h"
 #include "Common/Logging/Log.h"
 #include "Common/TraversalClient.h"
 #include "Core/NetPlayCommon.h"
@@ -77,6 +81,11 @@
 #include "DolphinQt/Settings/GameCubePane.h"
 #include "DolphinQt/XDNetplay/XDNetplayConfig.h"
 #include "DolphinQt/XDNetplay/XDStyleCombo.h"
+
+#if defined(__LIBUSB__) && !defined(ANDROID)
+#define ORRELINK_GBLINK 1
+#include "InputCommon/GBLink/GBLinkManager.h"
+#endif
 
 #include "UICommon/DiscordPresence.h"
 #include "UICommon/GameFile.h"
@@ -1136,14 +1145,27 @@ void NetPlayDialog::UpdateGUI()
                             local_role == NetPlay::XdRole::Unknown;
     m_submit_team_button->setEnabled(may_submit);
     m_ready_button->setVisible(is_xd && may_submit);
-    // Joining a room sends the cartridge team on its own, once per role.
+    // A real GBA plays its own cartridge's team: nothing is sent on joining. Otherwise joining a
+    // room sends the cartridge team on its own, once per role.
+    const bool real_gba = HasRealGba();
     if (is_xd && may_submit && room_format.has_value() &&
         m_auto_team_role != static_cast<int>(local_role))
     {
       m_auto_team_role = static_cast<int>(local_role);
-      AutoSubmitSaveTeam(m_auto_team_role);
+      if (real_gba)
+      {
+        DisplayMessage(tr("Your GBA cartridge plays your team. There is nothing to submit."), "");
+      }
+      else
+      {
+        AutoSubmitSaveTeam(m_auto_team_role);
+      }
     }
+    m_submit_team_button->setText(real_gba ? tr("Team: my GBA...") : tr("Submit Team..."));
     m_submit_team_button->setToolTip(
+        may_submit && real_gba ? tr("Your GBA cartridge plays your team, so nothing needs to be "
+                                    "sent.\nOpen this to read the team from the cartridge and "
+                                    "send it anyway.") :
         may_submit                    ? JoinerSubmitTeamToolTip() :
         multi_seats || host_watching ? tr("Only seated players can submit a team.") :
                                        tr("Only the opponent can submit a team."));
@@ -1172,6 +1194,8 @@ void NetPlayDialog::UpdateGUI()
     // While watching, the host's own team and model play no part.
     m_submit_team_button->setToolTip(
         watching ? tr("Not used while you watch: GBA 1 and GBA 2 play their own teams.") :
+        HasRealGba() ? tr("Your GBA cartridge plays your team. A pasted team is only used if your "
+                          "seat runs on an integrated GBA.") :
                    tr("Set your own team from a Showdown paste. Written to your GBA port 2 save "
                       "for the next battle you start."));
   }
@@ -1375,6 +1399,21 @@ void NetPlayDialog::OnSubmitTeam()
   if (IsHosting())
   {
     OnSubmitHostTeam();
+    return;
+  }
+
+  // A real GBA plays its own cartridge's team, so there is nothing to send. The fallback reads the
+  // trainer and party off the cartridge and sends them as a loaded-in team.
+  if (HasRealGba())
+  {
+    if (ModalMessageBox::question(
+            this, tr("Submit Team"),
+            tr("Your GBA cartridge plays your team, so nothing needs to be sent.\n\nRead the "
+               "trainer and party from the cartridge and send them as a loaded-in team "
+               "anyway?")) == QMessageBox::Yes)
+    {
+      OnReadCartridgeTeam();
+    }
     return;
   }
 
@@ -1819,6 +1858,121 @@ bool NetPlayDialog::SendSaveTeam(bool announce_failures)
 #else
   Q_UNUSED(announce_failures);
   return false;
+#endif
+}
+
+bool NetPlayDialog::HasRealGba()
+{
+#ifdef ORRELINK_GBLINK
+  return Config::Get(Config::MAIN_GBLINK_JOYBUS) && GBLink::Manager::Get().JoyReadyCount() >= 1;
+#else
+  return false;
+#endif
+}
+
+void NetPlayDialog::OnReadCartridgeTeam()
+{
+#if defined(ORRELINK_GBLINK) && defined(HAS_LIBMGBA)
+  auto* progress = new QProgressDialog(tr("Starting..."), tr("Cancel"), 0, 100, this);
+  progress->setWindowTitle(tr("Reading your GBA cartridge"));
+  progress->setWindowModality(Qt::WindowModal);
+  progress->setMinimumDuration(0);
+  progress->setAutoClose(false);
+  progress->setAutoReset(false);
+  progress->setAttribute(Qt::WA_DeleteOnClose);
+  progress->setValue(0);
+
+  QPointer<QProgressDialog> progress_ptr(progress);
+  auto* label_timer = new QTimer(progress);
+  connect(label_timer, &QTimer::timeout, progress, [progress_ptr] {
+    if (progress_ptr)
+      progress_ptr->setLabelText(QString::fromStdString(GBLink::Manager::Get().GetStatus().text));
+  });
+  label_timer->start(300);
+  connect(progress, &QProgressDialog::canceled, this, [] { GBLink::Manager::Get().CancelDump(); });
+
+  // The first adapter is the player's own GBA (the only one in a room).
+  std::string read_key;
+  {
+    const auto adapters = GBLink::Manager::Get().GetAdapters();
+    if (adapters.size() > 1)
+      read_key = adapters[0].key;
+  }
+  QPointer<NetPlayDialog> self(this);
+  const bool queued = GBLink::Manager::Get().RequestDump(
+      read_key,
+      [self, progress_ptr](GBLink::DumpResult result) {
+        // Runs on the GB-Link thread. The raw dump is kept as a backup either way.
+        std::string backup_path;
+        if (result.ok)
+        {
+          const std::string stamp =
+              QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd-HHmmss")).toStdString();
+          backup_path = File::GetUserPath(D_USER_IDX) + "GBLink Dumps/" +
+                        (result.code.empty() ? std::string("GBA") : result.code) + "-" + stamp +
+                        ".sav";
+          File::CreateFullPath(backup_path);
+          File::IOFile file(backup_path, "wb");
+          if (!file.WriteBytes(result.save.data(), result.save.size()))
+          {
+            result.ok = false;
+            result.error = "Could not write the backup copy to " + backup_path;
+          }
+        }
+        if (!self)
+          return;
+        QueueOnObject(self.data(), [self, dump = std::move(result), backup_path,
+                                    progress_ptr]() mutable {
+          if (progress_ptr)
+            progress_ptr->close();
+          if (!self)
+            return;
+          if (!dump.ok)
+          {
+            if (dump.error != "Cancelled")
+              ModalMessageBox::warning(self, tr("OrreLink"), QString::fromStdString(dump.error));
+            return;
+          }
+          std::string status;
+          std::string error;
+          const bool imported =
+              dump.partial ?
+                  XDNetplay::SaveImport::ImportTeamFromPartialSave(
+                      backup_path, File::GetUserPath(D_USER_IDX) + "GBLink Dumps/team-port1.sav", 1,
+                      &status, &error) :
+                  XDNetplay::SaveImport::ImportUserSave(backup_path, 1, &status, &error);
+          if (!imported)
+          {
+            ModalMessageBox::warning(self, tr("OrreLink"),
+                                     tr("Import failed (%1):\n\n%2\n\nBackup: %3")
+                                         .arg(QString::fromStdString(dump.title),
+                                              QString::fromStdString(error),
+                                              QString::fromStdString(backup_path)));
+            return;
+          }
+          Config::SetBaseOrCurrent(Config::MAIN_XD_SUBMIT_USE_SAVE, true);
+          Config::Save();
+          if (self->SendSaveTeam(true))
+          {
+            self->DisplayMessage(tr("Your cartridge's team was read and sent to the host."), "");
+          }
+        });
+      },
+      [progress_ptr](int percent) {
+        if (progress_ptr)
+          QueueOnObject(progress_ptr.data(), [progress_ptr, percent] {
+            if (progress_ptr)
+              progress_ptr->setValue(percent);
+          });
+      },
+      true);
+  if (!queued)
+  {
+    progress->close();
+    ModalMessageBox::warning(this, tr("OrreLink"), tr("GB-Link busy"));
+  }
+#else
+  ModalMessageBox::warning(this, tr("OrreLink"), tr("GB-Link unavailable"));
 #endif
 }
 
