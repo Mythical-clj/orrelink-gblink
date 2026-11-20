@@ -29,8 +29,12 @@ int main(int argc, char** argv) {
     uint32_t word = w == "-" ? 0 : (uint32_t)strtoul(w.c_str(), nullptr, 16);
     int n = 1; uint64_t lt = t;
     std::string tok;
-    while (ss >> tok) { if (tok[0] == 'x') { n = atoi(tok.c_str()+1); ss >> last; lt = strtoull(last.c_str(), nullptr, 10); } }
     R r = ParseReply(rep);
+    // A room trace shows what the game heard; "real=" is what the GBA said when that differed.
+    while (ss >> tok) {
+      if (tok[0] == 'x') { n = atoi(tok.c_str()+1); ss >> last; lt = strtoull(last.c_str(), nullptr, 10); }
+      else if (tok.compare(0, 5, "real=") == 0) r = ParseReply(tok.substr(5));
+    }
     for (int i = 0; i < n; i++) { uint64_t tt = n > 1 ? t + (lt - t) * i / (n - 1) : t; cmds.push_back({tt, cmd, word, r}); }
   }
   const double tps = 486e6; JoyBusLagModel m((uint64_t)(tps * lag_ms / 1000));

@@ -1,0 +1,88 @@
+From 797fdb7b29c7763e7ccbc1f5778b9ce9e4534d57 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 20 Nov 2026 13:20:23 -0600
+Subject: [PATCH] Lag model: the end of the program upload waits for the real
+ replies
+
+A room trace showed the upload's last status guessed as "nothing for you" while the GBA had
+raised its receive flag. The game then heard the flag a lag late, after the GBA had dropped it
+and stopped answering. The upload is a fixed 26891 writes after a reset; its last 32 writes and
+the 188 commands after them now wait for the real reply.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01764cASb9aVVk2m6JupRMj5
+---
+ Source/Core/Core/HW/SI/JoyBusLagModel.h | 22 +++++++++++++++++++++-
+ 1 file changed, 21 insertions(+), 1 deletion(-)
+
+diff --git a/Source/Core/Core/HW/SI/JoyBusLagModel.h b/Source/Core/Core/HW/SI/JoyBusLagModel.h
+index 9e79213f4c..c00134681e 100644
+--- a/Source/Core/Core/HW/SI/JoyBusLagModel.h
++++ b/Source/Core/Core/HW/SI/JoyBusLagModel.h
+@@ -27,6 +27,7 @@
+ //     cartridge acknowledges each word by flipping a flag, is answered from the latest real
+ //     reply that followed the same recent exchange, which reproduces those acknowledgements.
+ //     A real reply that turns out different stops this at once (the model then waits, below).
++//  (The end of the program upload, from its last 32 writes on, is not guessed: it waits too.)
+ //  C. Anything else waits for the real reply to that very command: new commands, their data,
+ //     the first repetitions after one.
+ //  D. (before C) Quiet replies: a write or a status to which the GBA has said "nothing for you"
+@@ -76,6 +77,17 @@ public:
+     e.word = cmd == kWrite ? word : 0;
+     e.run = (cmd == kStatus || cmd == kWrite) ? m_run + 1 : 0;
+     m_run = e.run;
++    // The program upload is a fixed 26891 writes after the last reset. Its end is the one moment
++    // nothing before it can predict (the GBA raises its receive flag and drops it again within
++    // about 75 ms if the game has not read), so the commands around it all wait for the real reply.
++    if (cmd == kReset)
++      m_upload_writes = 0;
++    else if (cmd == kWrite && ++m_upload_writes == kUploadWrites - kEndApproach)
++      m_end_left = kEndWindow;
++    const bool at_end = m_end_left > 0;
++    if (at_end)
++      m_end_left--;
++    e.at_end = at_end;
+     m_entries.push_back(e);
+     // For every period, how many commands in a row (ending here) repeat the one a period back.
+     for (uint32_t p = 1; p <= kMaxPeriod; p++)
+@@ -103,7 +115,9 @@ public:
+     How how = How::Waited;
+     Reply out;
+     e.source = k;
+-    if (!m_wait_only && TryLagged(k, &out, &e.source))
++    if (e.at_end)
++      out = Learn(k, real);
++    else if (!m_wait_only && TryLagged(k, &out, &e.source))
+       how = How::Lagged;
+     else if (!m_wait_only && TryPredicted(k, &out))
+       how = How::Predicted;
+@@ -122,6 +136,9 @@ private:
+   static constexpr uint32_t kMaxPeriod = 64;  // commands in the longest repetition looked for
+   static constexpr uint32_t kRepeats = 3;     // repetitions answered for real before A applies
+   static constexpr uint32_t kMinRun = 8;      // writes and status checks in a row before B applies
++  static constexpr uint32_t kUploadWrites = 26891;  // writes in a program upload, after a reset
++  static constexpr uint32_t kEndApproach = 32;      // the last writes of it that already wait
++  static constexpr uint32_t kEndWindow = 220;       // commands that wait, from there on
+ 
+   struct Entry
+   {
+@@ -130,6 +147,7 @@ private:
+     uint32_t run = 0;
+     uint32_t source = 0;  // the command whose real reply the game was given for this one
+     uint8_t cmd = 0;
++    bool at_end = false;  // inside the end of a program upload: waits for the real reply
+     Reply real, virt;
+   };
+ 
+@@ -349,6 +367,8 @@ private:
+   std::vector<Entry> m_entries;
+   uint32_t m_horizon = 0;  // commands before this one are older than the lag and known
+   uint32_t m_run = 0;
++  uint32_t m_upload_writes = 0;
++  uint32_t m_end_left = 0;
+   std::array<uint32_t, kMaxPeriod + 1> m_repeat{};
+   std::unordered_map<uint64_t, uint32_t> m_context;
+ };
+-- 
+2.43.0
+
