@@ -1,0 +1,166 @@
+From fb885ed4882f1cb12f2bfe4dfc2b0912b4881295 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 20 Nov 2026 12:44:14 -0600
+Subject: [PATCH] Lag model: answer long runs of quiet replies without waiting
+
+A write or a status the GBA has answered with no receive flag eight times running is answered the
+same. Replayed against five local two-player sessions this takes the commands that wait from about
+10,000 to about 1,500 in a hundred thousand. GBLinkJoyQuiet=false turns it off.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01764cASb9aVVk2m6JupRMj5
+---
+ Source/Core/Core/Config/MainSettings.cpp    |  2 +
+ Source/Core/Core/Config/MainSettings.h      |  1 +
+ Source/Core/Core/HW/SI/JoyBusLagModel.h     | 59 ++++++++++++++++++++-
+ Source/Core/Core/HW/SI/SI_DeviceGBALink.cpp |  8 +--
+ 4 files changed, 65 insertions(+), 5 deletions(-)
+
+diff --git a/Source/Core/Core/Config/MainSettings.cpp b/Source/Core/Core/Config/MainSettings.cpp
+index 6c5c0716e2..192704857b 100644
+--- a/Source/Core/Core/Config/MainSettings.cpp
++++ b/Source/Core/Core/Config/MainSettings.cpp
+@@ -445,6 +445,8 @@ const Info<bool> MAIN_GBLINK_JOYBUS{{System::Main, "XDNetplay", "GBLinkJoybus"},
+ const Info<bool> MAIN_GBLINK_JOY_PIPELINE{{System::Main, "XDNetplay", "GBLinkJoyPipeline"}, false};
+ // false: in a room every command waits for the real GBA's reply (no lag model), as in the first builds.
+ const Info<bool> MAIN_GBLINK_JOY_LAGMODEL{{System::Main, "XDNetplay", "GBLinkJoyLagModel"}, true};
++// The lag model answers a long run of "nothing for you" replies without waiting (rule D).
++const Info<bool> MAIN_GBLINK_JOY_QUIET{{System::Main, "XDNetplay", "GBLinkJoyQuiet"}, true};
+ const Info<int> MAIN_XD_IMPORTED_GAME_2{{System::Main, "XDNetplay", "ImportedGame2"}, 0};
+ const Info<int> MAIN_XD_IMPORTED_GAME_3{{System::Main, "XDNetplay", "ImportedGame3"}, 0};
+ const Info<std::string> MAIN_XD_ROM_EMERALD{{System::Main, "XDNetplay", "RomEmerald"}, ""};
+diff --git a/Source/Core/Core/Config/MainSettings.h b/Source/Core/Core/Config/MainSettings.h
+index b8be1d717e..d3de0c9903 100644
+--- a/Source/Core/Core/Config/MainSettings.h
++++ b/Source/Core/Core/Config/MainSettings.h
+@@ -298,6 +298,7 @@ extern const Info<std::string> MAIN_XD_IMPORTED_SAVE_3;  // GBA port 3 (device 2
+ extern const Info<bool> MAIN_GBLINK_JOYBUS;
+ extern const Info<bool> MAIN_GBLINK_JOY_PIPELINE;
+ extern const Info<bool> MAIN_GBLINK_JOY_LAGMODEL;
++extern const Info<bool> MAIN_GBLINK_JOY_QUIET;
+ extern const Info<int> MAIN_XD_IMPORTED_GAME_2;
+ extern const Info<int> MAIN_XD_IMPORTED_GAME_3;
+ // The Pokemon ROMs the launcher keeps for the emulated GBA ports (Emerald is the default; the others
+diff --git a/Source/Core/Core/HW/SI/JoyBusLagModel.h b/Source/Core/Core/HW/SI/JoyBusLagModel.h
+index bfecc18fbd..9e79213f4c 100644
+--- a/Source/Core/Core/HW/SI/JoyBusLagModel.h
++++ b/Source/Core/Core/HW/SI/JoyBusLagModel.h
+@@ -29,6 +29,10 @@
+ //     A real reply that turns out different stops this at once (the model then waits, below).
+ //  C. Anything else waits for the real reply to that very command: new commands, their data,
+ //     the first repetitions after one.
++//  D. (before C) Quiet replies: a write or a status to which the GBA has said "nothing for you"
++//     (no receive flag) eight times running is answered the same, since a flag it raises later
++//     stays raised and the game sees it one lag later. Replayed against five local sessions
++//     this takes the commands that wait from about 10,000 to about 1,500 in a hundred thousand.
+ //
+ // No Dolphin types in here, so that it can be run against a recorded session (JoyTrace.txt).
+ 
+@@ -56,8 +60,8 @@ public:
+   using RealFn = std::function<Reply(uint32_t index)>;
+ 
+   // |wait_only|: no repetition or upload shortcuts, every command waits for its real reply.
+-  explicit JoyBusLagModel(uint64_t lag_ticks, bool wait_only = false)
+-      : m_lag(lag_ticks), m_wait_only(wait_only)
++  explicit JoyBusLagModel(uint64_t lag_ticks, bool wait_only = false, bool quiet = true)
++      : m_lag(lag_ticks), m_wait_only(wait_only), m_quiet_on(quiet)
+   {
+   }
+ 
+@@ -91,6 +95,7 @@ public:
+     while (m_horizon < k && m_entries[m_horizon].ticks + m_lag <= e.ticks)
+     {
+       Learn(m_horizon, real);
++      NoteQuiet(m_horizon);
+       IndexContext(m_horizon);
+       m_horizon++;
+     }
+@@ -102,6 +107,8 @@ public:
+       how = How::Lagged;
+     else if (!m_wait_only && TryPredicted(k, &out))
+       how = How::Predicted;
++    else if (!m_wait_only && m_quiet_on && TryQuiet(k, &out))
++      how = How::Predicted;
+     else
+       out = Learn(k, real);
+     e.virt = out;
+@@ -289,8 +296,56 @@ private:
+     return true;
+   }
+ 
++  // D: quiet replies. A write or a status to which the GBA has said "nothing for you" (no
++  // receive flag) many times running, and still does, is answered the same without waiting: if
++  // it does raise the flag, the flag stays raised, and the game sees it one lag later.
++  static constexpr uint32_t kQuietRuns = 8;
++  struct Quiet
++  {
++    Reply last;
++    uint32_t same = 0;
++    uint32_t cooldown = 0;
++  };
++  static bool HasRecv(uint8_t cmd, const Reply& r)
++  {
++    if (cmd == kWrite)
++      return r.len < 1 || (r.data[0] & 0x08) != 0;
++    return r.len < 3 || (r.data[2] & 0x08) != 0;
++  }
++  void NoteQuiet(uint32_t i)
++  {
++    const Entry& e = m_entries[i];
++    if (e.cmd != kWrite && e.cmd != kStatus)
++      return;
++    Quiet& q = m_quiet[e.cmd == kWrite ? 1 : 0];
++    if (q.cooldown)
++      q.cooldown--;
++    if (e.real == q.last)
++      q.same++;
++    else
++    {
++      q.last = e.real;
++      q.same = 1;
++    }
++    if (!(e.virt == e.real))
++      q.cooldown = 32;  // it guessed wrong once: wait for a while
++  }
++  bool TryQuiet(uint32_t k, Reply* out) const
++  {
++    const Entry& e = m_entries[k];
++    if (e.cmd != kWrite && e.cmd != kStatus)
++      return false;
++    const Quiet& q = m_quiet[e.cmd == kWrite ? 1 : 0];
++    if (q.same < kQuietRuns || q.cooldown || q.last.len < 1 || HasRecv(e.cmd, q.last))
++      return false;
++    *out = q.last;
++    return true;
++  }
++  std::array<Quiet, 2> m_quiet{};
++
+   const uint64_t m_lag;
+   const bool m_wait_only;
++  const bool m_quiet_on;
+   std::vector<Entry> m_entries;
+   uint32_t m_horizon = 0;  // commands before this one are older than the lag and known
+   uint32_t m_run = 0;
+diff --git a/Source/Core/Core/HW/SI/SI_DeviceGBALink.cpp b/Source/Core/Core/HW/SI/SI_DeviceGBALink.cpp
+index 2f7c0562c7..44f3216f4a 100644
+--- a/Source/Core/Core/HW/SI/SI_DeviceGBALink.cpp
++++ b/Source/Core/Core/HW/SI/SI_DeviceGBALink.cpp
+@@ -242,10 +242,12 @@ int CSIDevice_GBALink::RunBuffer(u8* buffer, int request_length)
+       {
+         const bool lag_model = Config::Get(Config::MAIN_GBLINK_JOY_LAGMODEL);
+         m_model = std::make_unique<JoyBusLagModel>(
+-            u64{m_system.GetSystemTimers().GetTicksPerSecond()} * kLagMs / 1000, !lag_model);
+-        JoyLog(fmt::format("joybus port {}: lag model {}, {} ms; pipeline {}", m_device_number + 1,
++            u64{m_system.GetSystemTimers().GetTicksPerSecond()} * kLagMs / 1000, !lag_model,
++            Config::Get(Config::MAIN_GBLINK_JOY_QUIET));
++        JoyLog(fmt::format("joybus port {}: lag model {}, {} ms; pipeline {}; quiet replies {}", m_device_number + 1,
+                            lag_model ? "on" : "OFF (every command waits for its real reply)",
+-                           kLagMs, m_pipeline ? "on" : "OFF"));
++                           kLagMs, m_pipeline ? "on" : "OFF",
++                           Config::Get(Config::MAIN_GBLINK_JOY_QUIET) ? "on" : "off"));
+       }
+     }
+     if (m_model)
+-- 
+2.43.0
+
