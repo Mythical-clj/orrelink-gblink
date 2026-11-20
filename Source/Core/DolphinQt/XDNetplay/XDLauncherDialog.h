@@ -113,6 +113,8 @@ private:
   void RefreshGbLinkStatus();
 
   void OnBootSolo();
+  void OnBootLocalTwoPlayer();
+  bool ApplyLocalPlayers();
   void OnHost();
   void OnJoin();
   void OnSearchForMatch();
@@ -151,6 +153,13 @@ private:
   QCheckBox* m_gblink_full_read_check = nullptr;
   QCheckBox* m_gblink_menu_check = nullptr;
   QCheckBox* m_gblink_joybus_check = nullptr;
+  // The "Local 2-player" tab: two real GBAs on two GB-Link adapters, one PC.
+  QLabel* m_local_status = nullptr;
+  QComboBox* m_local_p1_combo = nullptr;
+  QComboBox* m_local_p2_combo = nullptr;
+  QPushButton* m_local_swap_button = nullptr;
+  QPushButton* m_local_boot_button = nullptr;
+  QStringList m_local_keys;  // the adapters the two combos list, by USB port
   QToolButton* m_gblink_toggle = nullptr;
   QWidget* m_gblink_section = nullptr;
   QToolButton* m_mgba_toggle = nullptr;

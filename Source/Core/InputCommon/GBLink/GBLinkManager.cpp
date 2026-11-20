@@ -1373,7 +1373,12 @@ void Manager::SetPortSetting(const std::string& key, int setting)
   {
     Link* l = slot.load();
     if (l && l->Key() == key)
+    {
+      if (l->PortSetting() != setting)
+        l->Log(fmt::format("adapter on USB port {} now plays GBA port {} (setting {})", key,
+                               EffectivePort(setting, 0), setting));
       l->SetPortSetting(setting);
+    }
   }
 }
 

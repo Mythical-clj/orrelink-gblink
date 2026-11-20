@@ -83,6 +83,7 @@ public:
 
   // Which emulated GBA this adapter plays: -2 automatic, -1 none, 0 every GBA, 1-4 that port.
   void SetPortSetting(int setting) { m_port_setting = setting; }
+  void Log(const std::string& s) const { LogLine(s); }
   int PortSetting() const { return m_port_setting; }
 
   bool WantsMirrorFrames() const { return m_pad_live; }
