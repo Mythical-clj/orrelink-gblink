@@ -55,7 +55,11 @@ public:
   // real(index) returns the real reply to command |index|, waiting for it if it has not arrived.
   using RealFn = std::function<Reply(uint32_t index)>;
 
-  explicit JoyBusLagModel(uint64_t lag_ticks) : m_lag(lag_ticks) {}
+  // |wait_only|: no repetition or upload shortcuts, every command waits for its real reply.
+  explicit JoyBusLagModel(uint64_t lag_ticks, bool wait_only = false)
+      : m_lag(lag_ticks), m_wait_only(wait_only)
+  {
+  }
 
   // The game sends command |cmd| (with |word| when it is a write) at emulated time |ticks|.
   // Returns its index, to be given to Decide once.
@@ -94,9 +98,9 @@ public:
     How how = How::Waited;
     Reply out;
     e.source = k;
-    if (TryLagged(k, &out, &e.source))
+    if (!m_wait_only && TryLagged(k, &out, &e.source))
       how = How::Lagged;
-    else if (TryPredicted(k, &out))
+    else if (!m_wait_only && TryPredicted(k, &out))
       how = How::Predicted;
     else
       out = Learn(k, real);
@@ -286,6 +290,7 @@ private:
   }
 
   const uint64_t m_lag;
+  const bool m_wait_only;
   std::vector<Entry> m_entries;
   uint32_t m_horizon = 0;  // commands before this one are older than the lag and known
   uint32_t m_run = 0;

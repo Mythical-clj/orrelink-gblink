@@ -442,7 +442,9 @@ const Info<int> MAIN_XD_TIMER_GAME_MINUTES{{System::Main, "XDNetplay", "TimerGam
 const Info<std::string> MAIN_XD_IMPORTED_SAVE_2{{System::Main, "XDNetplay", "ImportedSave2"}, ""};
 const Info<std::string> MAIN_XD_IMPORTED_SAVE_3{{System::Main, "XDNetplay", "ImportedSave3"}, ""};
 const Info<bool> MAIN_GBLINK_JOYBUS{{System::Main, "XDNetplay", "GBLinkJoybus"}, true};
-const Info<bool> MAIN_GBLINK_JOY_PIPELINE{{System::Main, "XDNetplay", "GBLinkJoyPipeline"}, true};
+const Info<bool> MAIN_GBLINK_JOY_PIPELINE{{System::Main, "XDNetplay", "GBLinkJoyPipeline"}, false};
+// false: in a room every command waits for the real GBA's reply (no lag model), as in the first builds.
+const Info<bool> MAIN_GBLINK_JOY_LAGMODEL{{System::Main, "XDNetplay", "GBLinkJoyLagModel"}, true};
 const Info<int> MAIN_XD_IMPORTED_GAME_2{{System::Main, "XDNetplay", "ImportedGame2"}, 0};
 const Info<int> MAIN_XD_IMPORTED_GAME_3{{System::Main, "XDNetplay", "ImportedGame3"}, 0};
 const Info<std::string> MAIN_XD_ROM_EMERALD{{System::Main, "XDNetplay", "RomEmerald"}, ""};

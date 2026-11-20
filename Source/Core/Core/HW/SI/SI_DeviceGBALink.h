@@ -7,6 +7,7 @@
 #include <chrono>
 #include <deque>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "Common/CommonTypes.h"
@@ -68,6 +69,7 @@ private:
   bool ShouldHoldStatus() const;
 
   std::deque<Inflight> m_inflight;
+  std::deque<std::string> m_recent;  // the last commands, shown when the GBA stops answering
   bool m_pipeline = false;  // MAIN_GBLINK_JOY_PIPELINE, read when the device is created
   u32 m_cur_id = 0;
   bool m_held_status = false;  // this command's status was not sent

@@ -240,9 +240,12 @@ int CSIDevice_GBALink::RunBuffer(u8* buffer, int request_length)
       const bool netplay = NetPlay::IsNetPlayRunning();
       if (netplay && m_owner != 0)
       {
+        const bool lag_model = Config::Get(Config::MAIN_GBLINK_JOY_LAGMODEL);
         m_model = std::make_unique<JoyBusLagModel>(
-            u64{m_system.GetSystemTimers().GetTicksPerSecond()} * kLagMs / 1000);
-        JoyLog(fmt::format("joybus port {}: lag model on, {} ms", m_device_number + 1, kLagMs));
+            u64{m_system.GetSystemTimers().GetTicksPerSecond()} * kLagMs / 1000, !lag_model);
+        JoyLog(fmt::format("joybus port {}: lag model {}, {} ms; pipeline {}", m_device_number + 1,
+                           lag_model ? "on" : "OFF (every command waits for its real reply)",
+                           kLagMs, m_pipeline ? "on" : "OFF"));
       }
     }
     if (m_model)
@@ -464,6 +467,16 @@ int CSIDevice_GBALink::RunBuffer(u8* buffer, int request_length)
     if (got <= 0)
       m_stat_none++;
     JoyTrace::Get().Add(m_device_number, m_timestamp_sent, m_tx[0], m_tx.data(), rx, got, note);
+    {
+      m_recent.push_back(
+          got > 0 ? fmt::format("{:02x} {:02x}{:02x}{:02x}{:02x} < {:02x}{:02x}{:02x}{:02x}{:02x}{}",
+                                m_tx[0], m_tx[1], m_tx[2], m_tx[3], m_tx[4], rx[0], rx[1], rx[2],
+                                rx[3], rx[4], note) :
+                    fmt::format("{:02x} {:02x}{:02x}{:02x}{:02x} < no reply{}", m_tx[0], m_tx[1],
+                                m_tx[2], m_tx[3], m_tx[4], note));
+      if (m_recent.size() > 24)
+        m_recent.pop_front();
+    }
 
     // The first commands one by one (a status only when its reply changes), then the totals.
     if (m_trace_left > 0)
@@ -518,6 +531,14 @@ void CSIDevice_GBALink::NoteAnswer(bool sent, bool is_status, int got, const u8*
       m_gba_absent = true;
       JoyLog(fmt::format("joybus port {}: no GBA answering, probing every 250 ms",
                          m_device_number + 1));
+      if (!m_recent.empty())
+      {
+        JoyLog(fmt::format("joybus port {}: the last {} commands the game heard (oldest first):",
+                           m_device_number + 1, m_recent.size()));
+        for (const std::string& line : m_recent)
+          JoyLog("  " + line);
+        m_recent.clear();
+      }
     }
   }
   if (!is_status || got != 3)

@@ -297,6 +297,7 @@ extern const Info<std::string> MAIN_XD_IMPORTED_SAVE_3;  // GBA port 3 (device 2
 // firmware), instead of the integrated GBAs. A netplay room follows the host's setting.
 extern const Info<bool> MAIN_GBLINK_JOYBUS;
 extern const Info<bool> MAIN_GBLINK_JOY_PIPELINE;
+extern const Info<bool> MAIN_GBLINK_JOY_LAGMODEL;
 extern const Info<int> MAIN_XD_IMPORTED_GAME_2;
 extern const Info<int> MAIN_XD_IMPORTED_GAME_3;
 // The Pokemon ROMs the launcher keeps for the emulated GBA ports (Emerald is the default; the others
