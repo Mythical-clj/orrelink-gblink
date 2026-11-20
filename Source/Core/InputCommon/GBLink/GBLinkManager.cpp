@@ -444,7 +444,9 @@ void Link::RunJoybus(UsbLink& usb)
   uint8_t last_status[3] = {};
   bool have_last_status = false;
   // The status read just after a write, given once to the game's next status within 50 ms.
-  static const bool combine = std::getenv("ORRELINK_NO_COMBINE") == nullptr;
+  // Off by default: on a real GBA the status straight after a write is not answered, and the wait
+  // made a program upload 15 s slower (test 19/21: 0.81 ms a command against 0.45).
+  static const bool combine = std::getenv("ORRELINK_COMBINE") != nullptr;
   uint8_t saved_status[3] = {};
   bool saved_ok = false;
   auto saved_at = Clock::now();
