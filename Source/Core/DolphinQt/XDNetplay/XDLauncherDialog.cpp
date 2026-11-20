@@ -548,7 +548,8 @@ void XDLauncherDialog::CreateMainLayout()
   agent_layout->addWidget(m_gblink_full_read_check, 3, 0);
   agent_layout->setColumnStretch(0, 1);
   agent_box->setLayout(agent_layout);
-  mgba_layout->addWidget(agent_box);
+  // These are GB-Link settings (the adapters' ports among them), so they sit on the Setup tab
+  // below and stay when the mGBA section is hidden.
   {
     // Optional ROMs for the other Gen 3 games: a port that holds a FireRed/LeafGreen or
     // Ruby/Sapphire save then runs that game as it is, instead of an Emerald rebuild.
@@ -587,6 +588,7 @@ void XDLauncherDialog::CreateMainLayout()
   m_gblink_joybus_check->setChecked(Config::Get(Config::MAIN_GBLINK_JOYBUS));
   m_gblink_joybus_check->setToolTip(tr("Cartridge over JOY Bus"));
   gblink_layout->addWidget(m_gblink_joybus_check, 1, 0);
+  gblink_layout->addWidget(agent_box, 2, 0);
   gblink_layout->setColumnStretch(0, 1);
   gblink_box->setLayout(gblink_layout);
   // The GB-Link section has two tabs: the setup above, and two real GBAs played on this PC.
@@ -1508,6 +1510,18 @@ void XDLauncherDialog::RefreshGbLinkStatus()
 #ifdef ORRELINK_GBLINK
   const GBLink::Status status = GBLink::Manager::Get().GetStatus();
   m_gblink_status->setText(QString::fromStdString(status.text));
+  {
+    // A GB-Link with "Real GBA" on: the game reads everything from the cartridge, so the mGBA
+    // section (ROMs, save imports, team codes) is not offered at all. It comes back when the
+    // adapter is unplugged or "Real GBA" is turned off.
+    const bool real_gba =
+        Config::Get(Config::MAIN_GBLINK_JOYBUS) && !GBLink::Manager::Get().GetAdapters().empty();
+    if (m_mgba_toggle->isVisibleTo(this) == real_gba)
+    {
+      m_mgba_toggle->setVisible(!real_gba);
+      m_mgba_section->setVisible(!real_gba && m_mgba_toggle->isChecked());
+    }
+  }
   {
     // The Local 2-player tab: list the adapters by USB port, keep the player choices.
     const std::vector<GBLink::AdapterInfo> found = GBLink::Manager::Get().GetAdapters();
