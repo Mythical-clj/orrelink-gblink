@@ -28,6 +28,7 @@
 
 #ifdef HAS_LIBMGBA
 #include "Core/HW/GBACore.h"
+#include "Core/HW/SI/SI_Device.h"
 #include "Core/HW/GBADetectLog.h"
 #include "Core/HW/XDBattleRecorder.h"
 #endif
@@ -1278,6 +1279,15 @@ Selection ConfigSelection()
   // guest's own submission decides, so this stays out of it.
   if (sel.guest_model_fallback <= 0 && !IsNetplaySessionActive())
     sel.guest_model_fallback = SaveImport::CartridgeModelForDevice(2);
+  // Two real GBAs on this PC (the launcher's Local 2-player): each plays with its own cartridge's
+  // trainer, which the game takes from the GBA itself, so no model is forced on either side.
+  if (!IsNetplaySessionActive() &&
+      Config::Get(Config::GetInfoForSIDevice(1)) == SerialInterface::SIDEVICE_GC_GBA_GBLINK &&
+      Config::Get(Config::GetInfoForSIDevice(2)) == SerialInterface::SIDEVICE_GC_GBA_GBLINK)
+  {
+    sel.host_model = 0;
+    sel.guest_model_fallback = 0;
+  }
   sel.music = Config::Get(Config::MAIN_XD_STYLE_MUSIC);
   sel.venue = Config::Get(Config::MAIN_XD_STYLE_VENUE);
   return sel;
