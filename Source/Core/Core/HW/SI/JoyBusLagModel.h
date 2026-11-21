@@ -82,8 +82,20 @@ public:
     // about 75 ms if the game has not read), so the commands around it all wait for the real reply.
     if (cmd == kReset)
       m_upload_writes = 0;
-    else if (cmd == kWrite && ++m_upload_writes == kUploadWrites - kEndApproach)
-      m_end_left = kEndWindow;
+    else if (cmd == kWrite)
+    {
+      ++m_upload_writes;
+      if (m_upload_writes == kUploadWrites - kEndApproach)
+        m_end_left = kEndWindow;
+      if (m_upload_writes == kUploadWrites)
+        m_settle_until = e.ticks + kSettleLags * m_lag;
+      else if (m_upload_writes == 100)
+        m_settle_until = 0;  // a new upload has begun
+    }
+    // After the upload the GBA boots the program (silent for about 1.5 s) and then the game and
+    // the program shake hands. That is a conversation, not a poll: no round of it may be answered
+    // from an older round. Only one status asked again and again is still held.
+    e.settle = e.ticks < m_settle_until;
     const bool at_end = m_end_left > 0;
     if (at_end)
       m_end_left--;
@@ -119,9 +131,9 @@ public:
       out = Learn(k, real);
     else if (!m_wait_only && TryLagged(k, &out, &e.source))
       how = How::Lagged;
-    else if (!m_wait_only && TryPredicted(k, &out))
+    else if (!m_wait_only && !e.settle && TryPredicted(k, &out))
       how = How::Predicted;
-    else if (!m_wait_only && m_quiet_on && TryQuiet(k, &out))
+    else if (!m_wait_only && !e.settle && m_quiet_on && TryQuiet(k, &out))
       how = How::Predicted;
     else
       out = Learn(k, real);
@@ -139,6 +151,7 @@ private:
   static constexpr uint32_t kUploadWrites = 26891;  // writes in a program upload, after a reset
   static constexpr uint32_t kEndApproach = 32;      // the last writes of it that already wait
   static constexpr uint32_t kEndWindow = 220;       // commands that wait, from there on
+  static constexpr uint32_t kSettleLags = 32;       // the program's boot and handshake, in lags
 
   struct Entry
   {
@@ -148,6 +161,7 @@ private:
     uint32_t source = 0;  // the command whose real reply the game was given for this one
     uint8_t cmd = 0;
     bool at_end = false;  // inside the end of a program upload: waits for the real reply
+    bool settle = false;  // the program is booting and shaking hands: no rounds, no guesses
     Reply real, virt;
   };
 
@@ -171,6 +185,8 @@ private:
     const Entry& e = m_entries[k];
     for (uint32_t p = 1; p <= kMaxPeriod; p++)
     {
+      if (e.settle && p > 1)
+        break;
       // A status asked again straight away may be held from the second time on: nothing the
       // game did in between could have changed it.
       const uint32_t needed = (p == 1 && e.cmd == kStatus) ? 1 : kRepeats * p;
@@ -369,6 +385,7 @@ private:
   uint32_t m_run = 0;
   uint32_t m_upload_writes = 0;
   uint32_t m_end_left = 0;
+  uint64_t m_settle_until = 0;
   std::array<uint32_t, kMaxPeriod + 1> m_repeat{};
   std::unordered_map<uint64_t, uint32_t> m_context;
 };
